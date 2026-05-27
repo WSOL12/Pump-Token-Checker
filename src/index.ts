@@ -28,6 +28,8 @@ interface JupiterTokenInfo {
   graduatedPool: string | null;
   twitter?: string | null;
   website?: string | null;
+  organicScore?: number | null;
+  organicScoreLabel?: string | null;
   firstPool?: {
     id: string;
     createdAt: string;
@@ -41,6 +43,8 @@ interface TokenCheckResult {
   order?: Order;
   hasTokenAd: boolean;
   tokenAdOrder?: Order;
+  hasCommunityTakeover: boolean;
+  communityTakeoverOrder?: Order;
   error?: string;
   graduationInfo?: {
     graduatedAt: string | null;
@@ -49,6 +53,10 @@ interface TokenCheckResult {
     createdAtTimestamp: number | null;
     twitter: string | null;
     website: string | null;
+    organicScore: number | null;
+    organicScoreLabel: string | null;
+    athPrice: number | null;
+    athMarketcap: number | null;
     isApprovedBeforeMigration: boolean | null;
     timeDifferenceMs: number | null;
     timeDifferenceFormatted: string | null;
@@ -58,6 +66,13 @@ interface TokenCheckResult {
     };
   };
   tokenAdInfo?: {
+    adCount: number;
+    isApprovedBeforeMigration: boolean | null;
+    timeDifferenceMs: number | null;
+    timeDifferenceFormatted: string | null;
+  };
+  communityTakeoverInfo?: {
+    takeoverCount: number;
     isApprovedBeforeMigration: boolean | null;
     timeDifferenceMs: number | null;
     timeDifferenceFormatted: string | null;
@@ -81,6 +96,158 @@ interface TokenCheckResult {
 }
 
 /**
+ * Fetch ATH price from Bitquery API (batch version - up to 10 tokens per request)
+ */
+async function fetchATHPriceBatch(tokenAddresses: string[]): Promise<Map<string, {
+  athPrice: number | null;
+  athMarketcap: number | null;
+}>> {
+  const apiKey = process.env.BITQUERY_API_KEY;
+  const resultMap = new Map<string, { athPrice: number | null; athMarketcap: number | null }>();
+  
+  if (!apiKey) {
+    // Bitquery API key is optional - return empty map if not provided
+    return resultMap;
+  }
+
+  if (tokenAddresses.length === 0) {
+    return resultMap;
+  }
+
+  // Limit to 10 tokens per batch
+  const batchSize = 10;
+  
+  for (let i = 0; i < tokenAddresses.length; i += batchSize) {
+    const batch = tokenAddresses.slice(i, i + batchSize);
+    
+    try {
+      // Format token addresses for GraphQL query
+      const tokenAddressList = batch.map(addr => `"${addr}"`).join(", ");
+      
+      const query = `{
+        Solana(dataset: combined) {
+          DEXTradeByTokens(
+            limitBy: { by: Trade_Currency_MintAddress, count: 1 }
+            where: {
+              Trade: {
+                Currency: {
+                  MintAddress: {
+                    in: [${tokenAddressList}]
+                  }
+                }
+                Side: {
+                  Currency: {
+                    MintAddress: {
+                      in: [
+                        "11111111111111111111111111111111",
+                        "So11111111111111111111111111111111111111112"
+                      ]
+                    }
+                  }
+                }
+              }
+              Block: { Time: { since: "2025-05-03T06:37:00Z" } }
+            }
+          ) {
+            Trade {
+              Currency {
+                MintAddress
+              }
+              PriceInUSD: PriceInUSD(maximum: Trade_PriceInUSD)
+            }
+            max: quantile(of: Trade_PriceInUSD, level: 0.98)
+            ATH_Marketcap: calculate(expression: "$max * 1000000000")
+          }
+        }
+      }`;
+
+      const response = await fetch("https://streaming.bitquery.io/graphql", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({ query, variables: "{}" }),
+      });
+
+      if (!response.ok) {
+        let errorDetails = "";
+        try {
+          const errorData = await response.json();
+          errorDetails = JSON.stringify(errorData);
+        } catch {
+          errorDetails = await response.text();
+        }
+        console.error("❌ Bitquery API error:", response.status, response.statusText, errorDetails.substring(0, 200));
+        // Continue with next batch or return partial results
+        continue;
+      }
+
+      const data = (await response.json()) as {
+        data?: {
+          Solana?: {
+            DEXTradeByTokens?: Array<{
+              max?: number;
+              ATH_Marketcap?: number;
+              Trade?: {
+                Currency?: {
+                  MintAddress?: string;
+                };
+                PriceInUSD?: number;
+              };
+            }>;
+          };
+        };
+      };
+
+      if (!data.data?.Solana?.DEXTradeByTokens) {
+        continue;
+      }
+
+      // Process results and map to token addresses
+      for (const tokenResult of data.data.Solana.DEXTradeByTokens) {
+        const mintAddress = tokenResult.Trade?.Currency?.MintAddress;
+        if (mintAddress && batch.includes(mintAddress)) {
+          resultMap.set(mintAddress, {
+            // ATH price: use Bitquery's PriceInUSD(maximum: Trade_PriceInUSD)
+            athPrice: tokenResult.Trade?.PriceInUSD ?? null,
+            // ATH marketcap: use Bitquery's ATH_Marketcap as returned
+            athMarketcap: tokenResult.ATH_Marketcap ?? null,
+          });
+        }
+      }
+
+      // Initialize null values for tokens that weren't found in the response
+      for (const tokenAddress of batch) {
+        if (!resultMap.has(tokenAddress)) {
+          resultMap.set(tokenAddress, {
+            athPrice: null,
+            athMarketcap: null,
+          });
+        }
+      }
+
+      // Small delay between batch requests
+      if (i + batchSize < tokenAddresses.length) {
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    } catch (error) {
+      // Silently fail for this batch - initialize null values
+      for (const tokenAddress of batch) {
+        if (!resultMap.has(tokenAddress)) {
+          resultMap.set(tokenAddress, {
+            athPrice: null,
+            athMarketcap: null,
+          });
+        }
+      }
+    }
+  }
+
+  return resultMap;
+}
+
+/**
  * Fetch token graduation info from Jupiter API
  */
 async function fetchGraduationInfo(tokenAddress: string): Promise<{
@@ -90,6 +257,10 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
   createdAtTimestamp: number | null;
   twitter: string | null;
   website: string | null;
+  organicScore: number | null;
+  organicScoreLabel: string | null;
+  athPrice: number | null;
+  athMarketcap: number | null;
 } | null> {
   const apiKey = process.env.JUPITER_API_KEY;
   
@@ -125,7 +296,10 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
 
     const twitter = tokenInfo.twitter || null;
     const website = tokenInfo.website || null;
+    const organicScore = tokenInfo.organicScore ?? null;
+    const organicScoreLabel = tokenInfo.organicScoreLabel || null;
 
+    // ATH price will be fetched in batches later - return null for now
     return {
       graduatedAt,
       graduatedAtTimestamp,
@@ -133,6 +307,10 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
       createdAtTimestamp,
       twitter,
       website,
+      organicScore,
+      organicScoreLabel,
+      athPrice: null,
+      athMarketcap: null,
     };
   } catch (error) {
     // Silently fail - graduation info is optional
@@ -177,6 +355,7 @@ async function checkTokenProfile(
         tokenAddress,
         hasTokenProfile: false,
         hasTokenAd: false,
+        hasCommunityTakeover: false,
         error: `HTTP ${response.status}: ${response.statusText}`,
       };
     }
@@ -188,10 +367,25 @@ async function checkTokenProfile(
       (order) => order.type === "tokenProfile" && order.status === "approved"
     );
 
-    // Check if there's a tokenAd order with approved status
-    const tokenAdOrder = data.orders?.find(
+    // Find all approved tokenAd orders and get the first one (earliest)
+    const tokenAdOrders = data.orders?.filter(
       (order) => order.type === "tokenAd" && order.status === "approved"
-    );
+    ) || [];
+    const hasTokenAd = tokenAdOrders.length > 0;
+    // Sort by timestamp (oldest first) and get the first one
+    const firstTokenAdOrder = hasTokenAd 
+      ? [...tokenAdOrders].sort((a, b) => a.paymentTimestamp - b.paymentTimestamp)[0]
+      : undefined;
+
+    // Find all approved communityTakeover orders and get the first one (earliest)
+    const communityTakeoverOrders = data.orders?.filter(
+      (order) => order.type === "communityTakeover" && order.status === "approved"
+    ) || [];
+    const hasCommunityTakeover = communityTakeoverOrders.length > 0;
+    // Sort by timestamp (oldest first) and get the first one
+    const firstCommunityTakeoverOrder = hasCommunityTakeover 
+      ? [...communityTakeoverOrders].sort((a, b) => a.paymentTimestamp - b.paymentTimestamp)[0]
+      : undefined;
 
     // Parse boost information
     const boosts = data.boosts || [];
@@ -225,10 +419,12 @@ async function checkTokenProfile(
 
     let graduationInfo: TokenCheckResult["graduationInfo"] = undefined;
     let tokenAdInfo: TokenCheckResult["tokenAdInfo"] = undefined;
+    let communityTakeoverInfo: TokenCheckResult["communityTakeoverInfo"] = undefined;
 
-    // If token has approved tokenProfile or tokenAd, fetch graduation info and compare
+    // If token has approved tokenProfile, tokenAd, or communityTakeover, fetch graduation info and compare
     const needsGraduationInfo = (tokenProfileOrder && tokenProfileOrder.paymentTimestamp) || 
-                                 (tokenAdOrder && tokenAdOrder.paymentTimestamp);
+                                 (firstTokenAdOrder && firstTokenAdOrder.paymentTimestamp) ||
+                                 (firstCommunityTakeoverOrder && firstCommunityTakeoverOrder.paymentTimestamp);
     
     if (needsGraduationInfo) {
       // Small delay to avoid rate limiting on Jupiter API
@@ -264,6 +460,10 @@ async function checkTokenProfile(
             createdAtTimestamp: gradInfo.createdAtTimestamp,
             twitter: gradInfo.twitter,
             website: gradInfo.website,
+            organicScore: gradInfo.organicScore,
+            organicScoreLabel: gradInfo.organicScoreLabel,
+            athPrice: gradInfo.athPrice,
+            athMarketcap: gradInfo.athMarketcap,
             isApprovedBeforeMigration,
             timeDifferenceMs,
             timeDifferenceFormatted: formatTimeDifference(timeDifferenceMs),
@@ -288,6 +488,10 @@ async function checkTokenProfile(
             createdAtTimestamp: gradInfo.createdAtTimestamp,
             twitter: gradInfo.twitter,
             website: gradInfo.website,
+            organicScore: gradInfo.organicScore,
+            organicScoreLabel: gradInfo.organicScoreLabel,
+            athPrice: gradInfo.athPrice,
+            athMarketcap: gradInfo.athMarketcap,
             isApprovedBeforeMigration: null,
             timeDifferenceMs: null,
             timeDifferenceFormatted: null,
@@ -298,16 +502,31 @@ async function checkTokenProfile(
           };
         }
 
-        // Process tokenAd if it exists
-        if (tokenAdOrder && tokenAdOrder.paymentTimestamp) {
-          const tokenAdPaymentTimestamp = tokenAdOrder.paymentTimestamp;
+        // Process first tokenAd if it exists
+        if (firstTokenAdOrder && firstTokenAdOrder.paymentTimestamp) {
+          const tokenAdPaymentTimestamp = firstTokenAdOrder.paymentTimestamp;
           const tokenAdTimeDifferenceMs = tokenAdPaymentTimestamp - gradInfo.graduatedAtTimestamp;
           const tokenAdIsApprovedBeforeMigration = tokenAdTimeDifferenceMs < 0;
           
           tokenAdInfo = {
+            adCount: tokenAdOrders.length,
             isApprovedBeforeMigration: tokenAdIsApprovedBeforeMigration,
             timeDifferenceMs: tokenAdTimeDifferenceMs,
             timeDifferenceFormatted: formatTimeDifference(tokenAdTimeDifferenceMs),
+          };
+        }
+
+        // Process first communityTakeover if it exists
+        if (firstCommunityTakeoverOrder && firstCommunityTakeoverOrder.paymentTimestamp) {
+          const communityTakeoverPaymentTimestamp = firstCommunityTakeoverOrder.paymentTimestamp;
+          const communityTakeoverTimeDifferenceMs = communityTakeoverPaymentTimestamp - gradInfo.graduatedAtTimestamp;
+          const communityTakeoverIsApprovedBeforeMigration = communityTakeoverTimeDifferenceMs < 0;
+          
+          communityTakeoverInfo = {
+            takeoverCount: communityTakeoverOrders.length,
+            isApprovedBeforeMigration: communityTakeoverIsApprovedBeforeMigration,
+            timeDifferenceMs: communityTakeoverTimeDifferenceMs,
+            timeDifferenceFormatted: formatTimeDifference(communityTakeoverTimeDifferenceMs),
           };
         }
       } else {
@@ -320,6 +539,10 @@ async function checkTokenProfile(
             createdAtTimestamp: null,
             twitter: null,
             website: null,
+            organicScore: null,
+            organicScoreLabel: null,
+            athPrice: null,
+            athMarketcap: null,
             isApprovedBeforeMigration: null,
             timeDifferenceMs: null,
             timeDifferenceFormatted: null,
@@ -329,8 +552,17 @@ async function checkTokenProfile(
             },
           };
         }
-        if (tokenAdOrder) {
+        if (hasTokenAd && firstTokenAdOrder) {
           tokenAdInfo = {
+            adCount: tokenAdOrders.length,
+            isApprovedBeforeMigration: null,
+            timeDifferenceMs: null,
+            timeDifferenceFormatted: null,
+          };
+        }
+        if (hasCommunityTakeover && firstCommunityTakeoverOrder) {
+          communityTakeoverInfo = {
+            takeoverCount: communityTakeoverOrders.length,
             isApprovedBeforeMigration: null,
             timeDifferenceMs: null,
             timeDifferenceFormatted: null,
@@ -343,10 +575,13 @@ async function checkTokenProfile(
       tokenAddress,
       hasTokenProfile: !!tokenProfileOrder,
       order: tokenProfileOrder,
-      hasTokenAd: !!tokenAdOrder,
-      tokenAdOrder: tokenAdOrder,
+      hasTokenAd: hasTokenAd,
+      tokenAdOrder: firstTokenAdOrder,
+      hasCommunityTakeover: hasCommunityTakeover,
+      communityTakeoverOrder: firstCommunityTakeoverOrder,
       graduationInfo,
       tokenAdInfo: tokenAdInfo ?? undefined,
+      communityTakeoverInfo: communityTakeoverInfo ?? undefined,
       boostInfo,
     };
   } catch (error) {
@@ -354,6 +589,7 @@ async function checkTokenProfile(
       tokenAddress,
       hasTokenProfile: false,
       hasTokenAd: false,
+      hasCommunityTakeover: false,
       error: error instanceof Error ? error.message : "Unknown error",
     };
   }
@@ -435,6 +671,25 @@ async function checkMultipleTokens(
     });
 
     const batchResults = await Promise.all(batchPromises);
+    
+    // Collect token addresses that need ATH price data (all tokens in batch)
+    const tokensForATH = batchResults.map(r => r.tokenAddress);
+    
+    // Fetch ATH prices in batches (10 tokens per request)
+    if (tokensForATH.length > 0 && process.env.BITQUERY_API_KEY) {
+      console.log(`    📊 Fetching ATH prices for ${tokensForATH.length} token(s) in batch...`);
+      const athPriceMap = await fetchATHPriceBatch(tokensForATH);
+      
+      // Update results with ATH price data
+      for (const result of batchResults) {
+        if (result.graduationInfo && athPriceMap.has(result.tokenAddress)) {
+          const athData = athPriceMap.get(result.tokenAddress)!;
+          result.graduationInfo.athPrice = athData.athPrice;
+          result.graduationInfo.athMarketcap = athData.athMarketcap;
+        }
+      }
+    }
+    
     results.push(...batchResults);
 
     // Save results incrementally
@@ -613,6 +868,10 @@ async function saveApprovedTokenIncremental(
       graduatedAt: result.graduationInfo.graduatedAt,
       twitter: result.graduationInfo.twitter,
       website: result.graduationInfo.website,
+      organicScore: result.graduationInfo.organicScore,
+      organicScoreLabel: result.graduationInfo.organicScoreLabel,
+      athPrice: result.graduationInfo.athPrice,
+      athMarketcap: result.graduationInfo.athMarketcap,
       isApprovedBeforeMigration: result.graduationInfo.isApprovedBeforeMigration,
       approvedVsMigrationMs: result.graduationInfo.timeDifferenceMs,
       approvedVsMigration: result.graduationInfo.timeDifferenceFormatted,
@@ -621,6 +880,7 @@ async function saveApprovedTokenIncremental(
     } : null,
     tokenAd: result.hasTokenAd ? {
       hasTokenAd: true,
+      adCount: result.tokenAdInfo?.adCount ?? 0,
       paymentTimestamp: result.tokenAdOrder?.paymentTimestamp ?? null,
       paymentDate: result.tokenAdOrder?.paymentTimestamp 
         ? new Date(result.tokenAdOrder.paymentTimestamp).toISOString() 
@@ -629,8 +889,19 @@ async function saveApprovedTokenIncremental(
       approvedVsMigrationMs: result.tokenAdInfo?.timeDifferenceMs ?? null,
       approvedVsMigration: result.tokenAdInfo?.timeDifferenceFormatted ?? null,
     } : null,
-    boost: result.boostInfo ? {
-      hasBoosts: result.boostInfo.hasBoosts,
+    communityTakeover: result.hasCommunityTakeover ? {
+      hasCommunityTakeover: true,
+      takeoverCount: result.communityTakeoverInfo?.takeoverCount ?? 0,
+      paymentTimestamp: result.communityTakeoverOrder?.paymentTimestamp ?? null,
+      paymentDate: result.communityTakeoverOrder?.paymentTimestamp 
+        ? new Date(result.communityTakeoverOrder.paymentTimestamp).toISOString() 
+        : null,
+      isApprovedBeforeMigration: result.communityTakeoverInfo?.isApprovedBeforeMigration ?? null,
+      approvedVsMigrationMs: result.communityTakeoverInfo?.timeDifferenceMs ?? null,
+      approvedVsMigration: result.communityTakeoverInfo?.timeDifferenceFormatted ?? null,
+    } : null,
+    boost: result.boostInfo && result.boostInfo.hasBoosts ? {
+      hasBoosts: true,
       count: result.boostInfo.boostCount,
       totalAmount: result.boostInfo.totalAmount,
       firstBoost: result.boostInfo.firstBoost ? {
@@ -647,18 +918,14 @@ async function saveApprovedTokenIncremental(
 
   approvedMap.set(result.tokenAddress, tokenData);
 
-  // Sort tokens: highlighted first, then by token address
-  const sortedTokens = Array.from(approvedMap.values()).sort((a, b) => {
-    if (a.highlighted && !b.highlighted) return -1;
-    if (!a.highlighted && b.highlighted) return 1;
-    return a.tokenAddress.localeCompare(b.tokenAddress);
-  });
+  // Keep tokens in processing order (Map maintains insertion order)
+  const tokens = Array.from(approvedMap.values());
 
   const output = {
     totalApproved: approvedMap.size,
-    highlightedCount: sortedTokens.filter((t: any) => t.highlighted).length,
+    highlightedCount: tokens.filter((t: any) => t.highlighted).length,
     checkedAt: new Date().toISOString(),
-    tokens: sortedTokens,
+    tokens: tokens,
   };
 
   await writeFile(filename, JSON.stringify(output, null, 2), "utf-8");
@@ -687,6 +954,10 @@ async function exportApprovedTokensToCSV(
       "GMGN URL",
       "Twitter URL",
       "Website URL",
+      "Organic Score",
+      "Organic Score Label",
+      "ATH Price",
+      "ATH Marketcap",
       "Highlighted",
       "Created Date",
       "Graduated Date",
@@ -696,10 +967,17 @@ async function exportApprovedTokensToCSV(
       "TokenProfile vs Migration Time",
       "TokenProfile vs Migration Time (ms)",
       "Has TokenAd",
+      "TokenAd Count",
       "TokenAd Payment Date",
       "TokenAd Approved Before Migration",
       "TokenAd vs Migration Time",
       "TokenAd vs Migration Time (ms)",
+      "Has CommunityTakeover",
+      "CommunityTakeover Count",
+      "CommunityTakeover Payment Date",
+      "CommunityTakeover Approved Before Migration",
+      "CommunityTakeover vs Migration Time",
+      "CommunityTakeover vs Migration Time (ms)",
       "Has Boosts",
       "Boost Count",
       "Total Boost Amount",
@@ -731,16 +1009,36 @@ async function exportApprovedTokensToCSV(
         escapeCSV(token.gmgnUrl || ""),
         escapeCSV(token.migration?.twitter || ""),
         escapeCSV(token.migration?.website || ""),
+        escapeCSV(token.migration?.organicScore?.toString() || ""),
+        escapeCSV(token.migration?.organicScoreLabel || ""),
+        escapeCSV(token.migration?.athPrice?.toString() || ""),
+        escapeCSV(token.migration?.athMarketcap?.toString() || ""),
         token.highlighted ? "Yes" : "No",
         escapeCSV(token.migration?.createdAt || ""),
         escapeCSV(token.migration?.graduatedAt || ""),
         escapeCSV(token.migration?.creationToMigration || ""),
         escapeCSV(token.migration?.creationToMigrationMs?.toString() || ""),
-        token.migration?.isApprovedBeforeMigration !== null 
+        (token.migration && token.migration.isApprovedBeforeMigration !== null)
           ? (token.migration.isApprovedBeforeMigration ? "Yes" : "No")
           : "",
         escapeCSV(token.migration?.approvedVsMigration || ""),
         escapeCSV(token.migration?.approvedVsMigrationMs?.toString() || ""),
+        token.tokenAd?.hasTokenAd ? "Yes" : "No",
+        escapeCSV(token.tokenAd?.adCount?.toString() || "0"),
+        escapeCSV(token.tokenAd?.paymentDate || ""),
+        (token.tokenAd && token.tokenAd.isApprovedBeforeMigration !== null)
+          ? (token.tokenAd.isApprovedBeforeMigration ? "Yes" : "No")
+          : "",
+        escapeCSV(token.tokenAd?.approvedVsMigration || ""),
+        escapeCSV(token.tokenAd?.approvedVsMigrationMs?.toString() || ""),
+        token.communityTakeover?.hasCommunityTakeover ? "Yes" : "No",
+        escapeCSV(token.communityTakeover?.takeoverCount?.toString() || "0"),
+        escapeCSV(token.communityTakeover?.paymentDate || ""),
+        (token.communityTakeover && token.communityTakeover.isApprovedBeforeMigration !== null)
+          ? (token.communityTakeover.isApprovedBeforeMigration ? "Yes" : "No")
+          : "",
+        escapeCSV(token.communityTakeover?.approvedVsMigration || ""),
+        escapeCSV(token.communityTakeover?.approvedVsMigrationMs?.toString() || ""),
         token.boost?.hasBoosts ? "Yes" : "No",
         escapeCSV(token.boost?.count?.toString() || "0"),
         escapeCSV(token.boost?.totalAmount?.toString() || "0"),
@@ -819,6 +1117,10 @@ async function saveApprovedTokens(
           graduatedAt: r.graduationInfo.graduatedAt,
           twitter: r.graduationInfo.twitter,
           website: r.graduationInfo.website,
+          organicScore: r.graduationInfo.organicScore,
+          organicScoreLabel: r.graduationInfo.organicScoreLabel,
+          athPrice: r.graduationInfo.athPrice,
+          athMarketcap: r.graduationInfo.athMarketcap,
           isApprovedBeforeMigration: r.graduationInfo.isApprovedBeforeMigration,
           approvedVsMigrationMs: r.graduationInfo.timeDifferenceMs,
           approvedVsMigration: r.graduationInfo.timeDifferenceFormatted,
@@ -835,8 +1137,19 @@ async function saveApprovedTokens(
           approvedVsMigrationMs: r.tokenAdInfo?.timeDifferenceMs ?? null,
           approvedVsMigration: r.tokenAdInfo?.timeDifferenceFormatted ?? null,
         } : null,
-        boost: r.boostInfo ? {
-          hasBoosts: r.boostInfo.hasBoosts,
+        communityTakeover: r.hasCommunityTakeover ? {
+          hasCommunityTakeover: true,
+          takeoverCount: r.communityTakeoverInfo?.takeoverCount ?? 0,
+          paymentTimestamp: r.communityTakeoverOrder?.paymentTimestamp ?? null,
+          paymentDate: r.communityTakeoverOrder?.paymentTimestamp 
+            ? new Date(r.communityTakeoverOrder.paymentTimestamp).toISOString() 
+            : null,
+          isApprovedBeforeMigration: r.communityTakeoverInfo?.isApprovedBeforeMigration ?? null,
+          approvedVsMigrationMs: r.communityTakeoverInfo?.timeDifferenceMs ?? null,
+          approvedVsMigration: r.communityTakeoverInfo?.timeDifferenceFormatted ?? null,
+        } : null,
+        boost: r.boostInfo && r.boostInfo.hasBoosts ? {
+          hasBoosts: true,
           count: r.boostInfo.boostCount,
           totalAmount: r.boostInfo.totalAmount,
           firstBoost: r.boostInfo.firstBoost ? {
