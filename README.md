@@ -23,6 +23,7 @@ A tool to check if Solana tokens have completed tokenProfile orders via the DexS
    ```
    MORALIS_API_KEY=your_moralis_api_key_here
    JUPITER_API_KEY=your_jupiter_api_key_here  # Optional: enables migration comparison
+   NAMERDAP_API_KEY=your_namerdap_api_key_here  # Optional: WHOIS lookup via namerdap.systems
    ```
    
    Optional: Set limit to control how many tokens to fetch:
@@ -63,13 +64,14 @@ The tool will:
 - Check each token address sequentially
 - Display real-time progress
 - Show which tokens have approved tokenProfile orders
-- Save approved tokens to `approved_tokens.json` with GMGN URLs
-- Save unapproved tokens to `unapproved_tokens.json`
+- Save approved tokens to `data/approved_tokens.json` with GMGN URLs
+- Save unapproved tokens to `data/unapproved_tokens.json`
+- Export CSV to `data/approved_tokens.csv`
 - Provide a summary at the end
 
 ### Output File Format
 
-**`approved_tokens.json`** contains:
+**`data/approved_tokens.json`** contains:
 - Token addresses with approved tokenProfile
 - GMGN URLs for each token
 - Payment timestamps and dates
@@ -77,9 +79,12 @@ The tool will:
   - Whether tokenProfile was approved before or after migration
   - Time difference between approval and migration
   - Graduation timestamp
+- Website details (when a website URL is present):
+  - Hosting IP (hosting-checker.net)
+  - Registrar, phone, mailing address (namerdap.systems RDAP)
 - Summary statistics
 
-**`unapproved_tokens.json`** contains:
+**`data/unapproved_tokens.json`** contains:
 - Token addresses without approved tokenProfile
 - GMGN URLs for each token
 - Error messages (if any)
@@ -97,6 +102,10 @@ The tool will:
 - Used to fetch graduated Pump.fun tokens
 - Requires API key (get one at https://developers.moralis.com - free signup)
 - Automatically handles pagination to fetch all available tokens
+
+### Website Lookup APIs
+- **Hosting IP**: `GET https://hosting-checker.net/api/hosting/{domain}` (no API key)
+- **WHOIS/RDAP**: `GET https://namerdap.systems/domain/{domain}` (optional `NAMERDAP_API_KEY`)
 
 ### Jupiter API (Optional)
 - Endpoint: `GET https://api.jup.ag/tokens/v2/search`

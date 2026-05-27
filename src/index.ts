@@ -1,5 +1,16 @@
 import { writeFile, readFile } from "fs/promises";
 import "dotenv/config";
+import {
+  APPROVED_TOKENS_CSV,
+  APPROVED_TOKENS_JSON,
+  UNAPPROVED_TOKENS_JSON,
+  ensureDataDir,
+} from "./paths.js";
+import {
+  extractDomainFromWebsite,
+  fetchWebsiteDetails,
+  type WebsiteDetails,
+} from "./website-info.js";
 
 interface Order {
   chainId: string;
@@ -64,6 +75,7 @@ interface TokenCheckResult {
       timeDifferenceMs: number | null;
       timeDifferenceFormatted: string | null;
     };
+    websiteDetails?: WebsiteDetails | null;
   };
   tokenAdInfo?: {
     adCount: number;
@@ -649,6 +661,7 @@ async function checkMultipleTokens(
 
   const totalToCheck = tokensToCheck.length;
   const alreadyProcessed = tokenAddresses.length - totalToCheck;
+  const websiteInfoCache = new Map<string, WebsiteDetails>();
 
   console.log(`Checking ${tokenAddresses.length} tokens...`);
   if (alreadyProcessed > 0) {
@@ -689,6 +702,26 @@ async function checkMultipleTokens(
         }
       }
     }
+
+    const tokensWithWebsite = batchResults.filter((r) => r.graduationInfo?.website);
+    if (tokensWithWebsite.length > 0) {
+      console.log(`    🌐 Fetching website info for ${tokensWithWebsite.length} token(s)...`);
+      for (const result of tokensWithWebsite) {
+        const domain = extractDomainFromWebsite(result.graduationInfo!.website);
+        if (!domain) {
+          continue;
+        }
+
+        let details = websiteInfoCache.get(domain);
+        if (!details) {
+          details = await fetchWebsiteDetails(domain);
+          websiteInfoCache.set(domain, details);
+          await new Promise((resolve) => setTimeout(resolve, 300));
+        }
+
+        result.graduationInfo!.websiteDetails = details;
+      }
+    }
     
     results.push(...batchResults);
 
@@ -709,62 +742,12 @@ async function checkMultipleTokens(
       console.log(`  [${globalIndex}/${tokenAddresses.length}] ${result.tokenAddress}`);
       
       if (result.hasTokenProfile) {
-        const isHighlighted = result.boostInfo?.hasBoosts && 
+        const isHighlighted = result.boostInfo?.hasBoosts &&
                               result.graduationInfo?.isApprovedBeforeMigration === true &&
                               result.boostInfo?.firstBoostVsMigration?.isFirstBoostBeforeMigration === true;
-        
-        if (isHighlighted) {
-          console.log(`    ⭐ HIGHLIGHTED: Both boost AND tokenProfile approved BEFORE migration`);
-        }
-        
-        console.log(`    ✓ Has tokenProfile (approved)`);
-        if (result.order?.paymentTimestamp) {
-          const date = new Date(result.order.paymentTimestamp);
-          console.log(`    Payment: ${date.toISOString()}`);
-          
-          // Show migration comparison if available
-          if (result.graduationInfo?.graduatedAtTimestamp) {
-            const isBefore = result.graduationInfo.isApprovedBeforeMigration;
-            const timeDiff = result.graduationInfo.timeDifferenceFormatted;
-            if (isBefore !== null && timeDiff) {
-              console.log(`    Migration: ${isBefore ? "BEFORE" : "AFTER"} migration by ${timeDiff}`);
-            }
-            
-            // Show creation to migration time
-            if (result.graduationInfo.creationToMigrationTime?.timeDifferenceFormatted) {
-              const creationTime = result.graduationInfo.createdAt 
-                ? new Date(result.graduationInfo.createdAt).toISOString() 
-                : "N/A";
-              console.log(`    Created: ${creationTime}`);
-              console.log(`    Creation to Migration: ${result.graduationInfo.creationToMigrationTime.timeDifferenceFormatted}`);
-            }
-          }
-        }
-        
-        // Show boost information
-        if (result.boostInfo?.hasBoosts) {
-          console.log(`    🚀 Dex Boost: ${result.boostInfo.boostCount} boost(s), Total: ${result.boostInfo.totalAmount}`);
-          if (result.boostInfo.firstBoost) {
-            console.log(`       First boost: ${result.boostInfo.firstBoost.amount} at ${result.boostInfo.firstBoost.paymentDate}`);
-            if (result.boostInfo.firstBoostVsMigration) {
-              const isBefore = result.boostInfo.firstBoostVsMigration.isFirstBoostBeforeMigration;
-              const timeDiff = result.boostInfo.firstBoostVsMigration.timeDifferenceFormatted;
-              if (isBefore !== null && timeDiff) {
-                console.log(`       First boost ${isBefore ? "BEFORE" : "AFTER"} migration by ${timeDiff}`);
-              }
-            }
-          }
-        } else {
-          console.log(`    🚀 Dex Boost: None`);
-        }
-        
-        console.log(`    💾 Saved to approved_tokens.json`);
+        console.log(`    ✓ Has tokenProfile (approved)${isHighlighted ? " ⭐" : ""}`);
       } else {
-        console.log(`    ✗ No tokenProfile found`);
-        if (result.error) {
-          console.log(`    Error: ${result.error}`);
-        }
-        console.log(`    💾 Saved to unapproved_tokens.json`);
+        console.log(`    ✗ No tokenProfile found${result.error ? ` (${result.error})` : ""}`);
       }
     }
 
@@ -798,7 +781,7 @@ async function loadTokenAddressesFromFile(
  * Load existing approved tokens from JSON file
  */
 async function loadExistingApprovedTokens(
-  filename: string = "approved_tokens.json"
+  filename: string = APPROVED_TOKENS_JSON
 ): Promise<Map<string, any>> {
   try {
     const content = await readFile(filename, "utf-8");
@@ -822,7 +805,7 @@ async function loadExistingApprovedTokens(
  * Load existing unapproved tokens from JSON file
  */
 async function loadExistingUnapprovedTokens(
-  filename: string = "unapproved_tokens.json"
+  filename: string = UNAPPROVED_TOKENS_JSON
 ): Promise<Map<string, any>> {
   try {
     const content = await readFile(filename, "utf-8");
@@ -848,7 +831,7 @@ async function loadExistingUnapprovedTokens(
 async function saveApprovedTokenIncremental(
   result: TokenCheckResult,
   approvedMap: Map<string, any>,
-  filename: string = "approved_tokens.json"
+  filename: string = APPROVED_TOKENS_JSON
 ): Promise<void> {
   if (!result.hasTokenProfile || !result.order) {
     return;
@@ -877,6 +860,7 @@ async function saveApprovedTokenIncremental(
       approvedVsMigration: result.graduationInfo.timeDifferenceFormatted,
       creationToMigrationMs: result.graduationInfo.creationToMigrationTime?.timeDifferenceMs ?? null,
       creationToMigration: result.graduationInfo.creationToMigrationTime?.timeDifferenceFormatted ?? null,
+      websiteDetails: result.graduationInfo.websiteDetails ?? null,
     } : null,
     tokenAd: result.hasTokenAd ? {
       hasTokenAd: true,
@@ -935,8 +919,8 @@ async function saveApprovedTokenIncremental(
  * Export approved tokens to CSV format with serial index
  */
 async function exportApprovedTokensToCSV(
-  filename: string = "approved_tokens.json",
-  csvFilename: string = "approved_tokens.csv"
+  filename: string = APPROVED_TOKENS_JSON,
+  csvFilename: string = APPROVED_TOKENS_CSV
 ): Promise<void> {
   try {
     const content = await readFile(filename, "utf-8");
@@ -954,6 +938,10 @@ async function exportApprovedTokensToCSV(
       "GMGN URL",
       "Twitter URL",
       "Website URL",
+      "Website Hosting IP Address",
+      "Registrar",
+      "Phone",
+      "Mailing Address",
       "Organic Score",
       "Organic Score Label",
       "ATH Price",
@@ -1009,6 +997,10 @@ async function exportApprovedTokensToCSV(
         escapeCSV(token.gmgnUrl || ""),
         escapeCSV(token.migration?.twitter || ""),
         escapeCSV(token.migration?.website || ""),
+        escapeCSV(token.migration?.websiteDetails?.hostingIp || ""),
+        escapeCSV(token.migration?.websiteDetails?.registrar || ""),
+        escapeCSV(token.migration?.websiteDetails?.phone || ""),
+        escapeCSV(token.migration?.websiteDetails?.mailingAddress || ""),
         escapeCSV(token.migration?.organicScore?.toString() || ""),
         escapeCSV(token.migration?.organicScoreLabel || ""),
         escapeCSV(token.migration?.athPrice?.toString() || ""),
@@ -1071,7 +1063,7 @@ async function exportApprovedTokensToCSV(
 async function saveUnapprovedTokenIncremental(
   result: TokenCheckResult,
   unapprovedMap: Map<string, any>,
-  filename: string = "unapproved_tokens.json"
+  filename: string = UNAPPROVED_TOKENS_JSON
 ): Promise<void> {
   if (result.hasTokenProfile) {
     return;
@@ -1099,7 +1091,7 @@ async function saveUnapprovedTokenIncremental(
  */
 async function saveApprovedTokens(
   results: TokenCheckResult[],
-  filename: string = "approved_tokens.json"
+  filename: string = APPROVED_TOKENS_JSON
 ): Promise<void> {
   const approvedTokens = results
     .filter((r) => r.hasTokenProfile && r.order)
@@ -1126,6 +1118,7 @@ async function saveApprovedTokens(
           approvedVsMigration: r.graduationInfo.timeDifferenceFormatted,
           creationToMigrationMs: r.graduationInfo.creationToMigrationTime?.timeDifferenceMs ?? null,
           creationToMigration: r.graduationInfo.creationToMigrationTime?.timeDifferenceFormatted ?? null,
+          websiteDetails: r.graduationInfo.websiteDetails ?? null,
         } : null,
         tokenAd: r.hasTokenAd ? {
           hasTokenAd: true,
@@ -1180,7 +1173,7 @@ async function saveApprovedTokens(
  */
 async function saveUnapprovedTokens(
   results: TokenCheckResult[],
-  filename: string = "unapproved_tokens.json"
+  filename: string = UNAPPROVED_TOKENS_JSON
 ): Promise<void> {
   const unapprovedTokens = results
     .filter((r) => !r.hasTokenProfile)
@@ -1204,6 +1197,8 @@ async function saveUnapprovedTokens(
  * Main function - Load token addresses from tokens.txt file
  */
 async function main() {
+  await ensureDataDir();
+
   // Load token addresses from file (one address per line)
   const tokenAddresses = await loadTokenAddressesFromFile("tokens.txt");
 
@@ -1255,7 +1250,7 @@ async function main() {
       (r) => r.hasTokenProfile && r.boostInfo?.hasBoosts
     );
     
-    console.log(`\n✓ ${withTokenProfile.length} approved token(s) saved to approved_tokens.json`);
+    console.log(`\n✓ ${withTokenProfile.length} approved token(s) saved to ${APPROVED_TOKENS_JSON}`);
     if (tokensWithBoosts.length > 0) {
       console.log(`  🚀 ${tokensWithBoosts.length} token(s) with dex boost(s)`);
     }
@@ -1271,7 +1266,7 @@ async function main() {
   await exportApprovedTokensToCSV();
 
   if (withoutTokenProfile.length > 0) {
-    console.log(`✓ ${withoutTokenProfile.length} unapproved token(s) saved to unapproved_tokens.json`);
+    console.log(`✓ ${withoutTokenProfile.length} unapproved token(s) saved to ${UNAPPROVED_TOKENS_JSON}`);
   }
 }
 

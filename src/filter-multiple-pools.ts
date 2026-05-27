@@ -1,5 +1,11 @@
 import { writeFile, readFile } from "fs/promises";
 import "dotenv/config";
+import {
+  APPROVED_TOKENS_CSV,
+  APPROVED_TOKENS_JSON,
+  TOKENS_WITH_MULTIPLE_POOLS_JSON,
+  ensureDataDir,
+} from "./paths.js";
 
 interface PoolResult {
   tokenAddress: string;
@@ -162,14 +168,14 @@ async function fetchPoolCountBatch(tokenAddresses: string[]): Promise<Map<string
  * Read approved tokens JSON file (input)
  */
 async function loadApprovedTokensJson(
-  filename: string = "approved_tokens.json"
+  filename: string = APPROVED_TOKENS_JSON
 ): Promise<{ checkedAt?: string; totalApproved?: number; highlightedCount?: number; tokens: any[] }> {
   try {
     const content = await readFile(filename, "utf-8");
     const data = JSON.parse(content);
 
     if (!data || !Array.isArray(data.tokens)) {
-      throw new Error("approved_tokens.json is missing `tokens` array");
+      throw new Error(`${APPROVED_TOKENS_JSON} is missing \`tokens\` array`);
     }
 
     return data;
@@ -184,7 +190,7 @@ async function loadApprovedTokensJson(
  */
 async function exportApprovedTokensToCSV(
   approvedJson: { tokens: any[] },
-  csvFilename: string = "approved_tokens.csv"
+  csvFilename: string = APPROVED_TOKENS_CSV
 ): Promise<void> {
   // Helper function to escape CSV values
   const escapeCSV = (value: any): string => {
@@ -205,6 +211,10 @@ async function exportApprovedTokensToCSV(
     "Pool Count",
     "Twitter URL",
     "Website URL",
+    "Website Hosting IP Address",
+    "Registrar",
+    "Phone",
+    "Mailing Address",
     "Organic Score",
     "Organic Score Label",
     "ATH Price",
@@ -250,6 +260,10 @@ async function exportApprovedTokensToCSV(
       escapeCSV(token.poolCount?.toString() || ""),
       escapeCSV(token.migration?.twitter || ""),
       escapeCSV(token.migration?.website || ""),
+      escapeCSV(token.migration?.websiteDetails?.hostingIp || ""),
+      escapeCSV(token.migration?.websiteDetails?.registrar || ""),
+      escapeCSV(token.migration?.websiteDetails?.phone || ""),
+      escapeCSV(token.migration?.websiteDetails?.mailingAddress || ""),
       escapeCSV(token.migration?.organicScore?.toString() || ""),
       escapeCSV(token.migration?.organicScoreLabel || ""),
       escapeCSV(token.migration?.athPrice?.toString() || ""),
@@ -303,11 +317,13 @@ async function exportApprovedTokensToCSV(
  * Main function
  */
 async function main() {
-  console.log("🔍 Adding pool counts to approved_tokens.json and regenerating approved_tokens.csv...\n");
+  await ensureDataDir();
 
-  const approvedJson = await loadApprovedTokensJson("approved_tokens.json");
+  console.log(`🔍 Adding pool counts to ${APPROVED_TOKENS_JSON} and regenerating ${APPROVED_TOKENS_CSV}...\n`);
+
+  const approvedJson = await loadApprovedTokensJson();
   if (!approvedJson.tokens || approvedJson.tokens.length === 0) {
-    console.log("❌ No tokens found in approved_tokens.json");
+    console.log(`❌ No tokens found in ${APPROVED_TOKENS_JSON}`);
     return;
   }
 
@@ -315,7 +331,7 @@ async function main() {
     .map((t: any) => String(t.tokenAddress || "").trim())
     .filter((t: string) => t.length > 0);
 
-  console.log(`✓ Loaded ${tokenAddresses.length} token(s) from approved_tokens.json\n`);
+  console.log(`✓ Loaded ${tokenAddresses.length} token(s) from ${APPROVED_TOKENS_JSON}\n`);
 
   console.log(`📊 Checking pool counts for ${tokenAddresses.length} token(s)...\n`);
 
@@ -329,12 +345,10 @@ async function main() {
     token.poolCount = poolCount;
   }
 
-  // Overwrite approved_tokens.json with poolCount added
-  await writeFile("approved_tokens.json", JSON.stringify(approvedJson, null, 2), "utf-8");
-  console.log("✓ Updated approved_tokens.json (added poolCount)");
+  await writeFile(APPROVED_TOKENS_JSON, JSON.stringify(approvedJson, null, 2), "utf-8");
+  console.log(`✓ Updated ${APPROVED_TOKENS_JSON} (added poolCount)`);
 
-  // Re-generate approved_tokens.csv (now includes Pool Count column)
-  await exportApprovedTokensToCSV(approvedJson, "approved_tokens.csv");
+  await exportApprovedTokensToCSV(approvedJson, APPROVED_TOKENS_CSV);
 
   // Also write a small helper file for “multiple pools” filtering
   const multiplePoolsOnly = approvedJson.tokens
@@ -356,7 +370,7 @@ async function main() {
     ),
     "utf-8"
   );
-  console.log("✓ Saved tokens_with_multiple_pools.json");
+  console.log(`✓ Saved ${TOKENS_WITH_MULTIPLE_POOLS_JSON}`);
 
   console.log("\n=== SUMMARY ===");
   console.log(`Total tokens checked: ${approvedJson.tokens.length}`);
