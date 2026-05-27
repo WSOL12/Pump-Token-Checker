@@ -4,6 +4,9 @@ export interface WebsiteDetails {
   registrar: string | null;
   phone: string | null;
   mailingAddress: string | null;
+  registeredOn: string | null;
+  expiresOn: string | null;
+  updatedOn: string | null;
 }
 
 interface HostingCheckerResponse {
@@ -20,6 +23,10 @@ interface NamerdapEntity {
 
 interface NamerdapResponse {
   entities?: NamerdapEntity[];
+  events?: Array<{
+    eventAction?: string;
+    eventDate?: string;
+  }>;
 }
 
 /**
@@ -149,6 +156,9 @@ function parseNamerdapResponse(data: NamerdapResponse): {
   registrar: string | null;
   phone: string | null;
   mailingAddress: string | null;
+  registeredOn: string | null;
+  expiresOn: string | null;
+  updatedOn: string | null;
 } {
   const registrarEntity = findEntityByRole(data.entities, "registrar");
   const registrantEntity = findEntityByRole(data.entities, "registrant");
@@ -165,7 +175,21 @@ function parseNamerdapResponse(data: NamerdapResponse): {
     getVcardProperty(registrantEntity?.vcardArray as unknown[] | undefined, "adr") ??
     getVcardProperty(registrarEntity?.vcardArray as unknown[] | undefined, "adr");
 
-  return { registrar, phone, mailingAddress };
+  const getEventDate = (actions: string[]): string | null => {
+    for (const event of data.events ?? []) {
+      const action = event.eventAction?.toLowerCase();
+      if (action && actions.includes(action) && event.eventDate) {
+        return event.eventDate;
+      }
+    }
+    return null;
+  };
+
+  const registeredOn = getEventDate(["registration"]);
+  const expiresOn = getEventDate(["expiration", "registrar expiration"]);
+  const updatedOn = getEventDate(["last changed", "last update of rdap database"]);
+
+  return { registrar, phone, mailingAddress, registeredOn, expiresOn, updatedOn };
 }
 
 function namerdapHeaders(): Record<string, string> {
@@ -215,6 +239,9 @@ export async function fetchDomainWhois(domain: string): Promise<{
   registrar: string | null;
   phone: string | null;
   mailingAddress: string | null;
+  registeredOn: string | null;
+  expiresOn: string | null;
+  updatedOn: string | null;
 }> {
   try {
     const response = await fetch(`https://namerdap.systems/domain/${encodeURIComponent(domain)}`, {
@@ -222,13 +249,27 @@ export async function fetchDomainWhois(domain: string): Promise<{
     });
 
     if (!response.ok) {
-      return { registrar: null, phone: null, mailingAddress: null };
+      return {
+        registrar: null,
+        phone: null,
+        mailingAddress: null,
+        registeredOn: null,
+        expiresOn: null,
+        updatedOn: null,
+      };
     }
 
     const data = (await response.json()) as NamerdapResponse;
     return parseNamerdapResponse(data);
   } catch {
-    return { registrar: null, phone: null, mailingAddress: null };
+    return {
+      registrar: null,
+      phone: null,
+      mailingAddress: null,
+      registeredOn: null,
+      expiresOn: null,
+      updatedOn: null,
+    };
   }
 }
 
@@ -247,5 +288,8 @@ export async function fetchWebsiteDetails(domain: string): Promise<WebsiteDetail
     registrar: whois.registrar,
     phone: whois.phone,
     mailingAddress: whois.mailingAddress,
+    registeredOn: whois.registeredOn,
+    expiresOn: whois.expiresOn,
+    updatedOn: whois.updatedOn,
   };
 }
