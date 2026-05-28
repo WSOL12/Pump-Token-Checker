@@ -1,6 +1,7 @@
 export interface WebsiteDetails {
   domain: string;
   hostingIp: string | null;
+  hostedBy: string | null;
   registrar: string | null;
   phone: string | null;
   mailingAddress: string | null;
@@ -12,6 +13,9 @@ export interface WebsiteDetails {
 interface HostingCheckerResponse {
   web?: {
     lookups?: Array<{ address?: string; isIPv6?: boolean }>;
+    providers?: Array<{
+      organization?: string;
+    }>;
   };
 }
 
@@ -206,6 +210,48 @@ function namerdapHeaders(): Record<string, string> {
   return headers;
 }
 
+async function fetchRdapJson(url: string): Promise<NamerdapResponse | null> {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/rdap+json, application/json",
+      },
+      redirect: "follow",
+    });
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as NamerdapResponse;
+  } catch {
+    return null;
+  }
+}
+
+function getRdapFallbackUrls(domain: string): string[] {
+  const parts = domain.toLowerCase().split(".");
+  const tld = parts.length > 1 ? parts[parts.length - 1] : "";
+  const encoded = encodeURIComponent(domain);
+
+  // Order matters:
+  // 1) Try TLD-specific RDAP engines first (more reliable for some registries)
+  // 2) Then try generic bootstrap as last-resort fallback
+  const urls: string[] = [];
+
+  if (tld === "fun" || tld === "space") {
+    urls.push(`https://rdap.radix.host/rdap/domain/${encoded}?jcard=1`);
+    urls.push(`https://rdap.radix.host/rdap/domain/${encoded}`);
+  }
+
+  if (tld === "tech") {
+    urls.push(`https://rdap.namecheap.com/domain/${encoded}?jcard=1`);
+    urls.push(`https://rdap.namecheap.com/domain/${encoded}`);
+  }
+
+  urls.push(`https://rdap.org/domain/${encoded}`);
+
+  return urls;
+}
+
 /**
  * Fetch web hosting IP from hosting-checker.net
  */
@@ -232,6 +278,29 @@ export async function fetchHostingIp(domain: string): Promise<string | null> {
   }
 }
 
+export async function fetchHostedBy(domain: string): Promise<string | null> {
+  try {
+    const response = await fetch(`https://hosting-checker.net/api/hosting/${encodeURIComponent(domain)}`);
+    if (!response.ok) {
+      return null;
+    }
+
+    const data = (await response.json()) as HostingCheckerResponse;
+    const providers = data.web?.providers ?? [];
+    const names = providers
+      .map((provider) => provider.organization?.trim())
+      .filter((name): name is string => Boolean(name));
+
+    if (names.length === 0) {
+      return null;
+    }
+
+    return Array.from(new Set(names)).join(", ");
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fetch registrar, phone, and mailing address from namerdap.systems (RDAP)
  */
@@ -244,23 +313,32 @@ export async function fetchDomainWhois(domain: string): Promise<{
   updatedOn: string | null;
 }> {
   try {
-    const response = await fetch(`https://namerdap.systems/domain/${encodeURIComponent(domain)}`, {
+    const namerdapUrl = `https://namerdap.systems/domain/${encodeURIComponent(domain)}`;
+    const response = await fetch(namerdapUrl, {
       headers: namerdapHeaders(),
     });
 
-    if (!response.ok) {
-      return {
-        registrar: null,
-        phone: null,
-        mailingAddress: null,
-        registeredOn: null,
-        expiresOn: null,
-        updatedOn: null,
-      };
+    if (response.ok) {
+      const data = (await response.json()) as NamerdapResponse;
+      return parseNamerdapResponse(data);
     }
 
-    const data = (await response.json()) as NamerdapResponse;
-    return parseNamerdapResponse(data);
+    // Fallback for domains/TLDs where namerdap returns 404 or unreachable provider.
+    for (const url of getRdapFallbackUrls(domain)) {
+      const rdapFallback = await fetchRdapJson(url);
+      if (rdapFallback) {
+        return parseNamerdapResponse(rdapFallback);
+      }
+    }
+
+    return {
+      registrar: null,
+      phone: null,
+      mailingAddress: null,
+      registeredOn: null,
+      expiresOn: null,
+      updatedOn: null,
+    };
   } catch {
     return {
       registrar: null,
@@ -277,14 +355,16 @@ export async function fetchDomainWhois(domain: string): Promise<{
  * Fetch hosting IP and WHOIS details for a domain.
  */
 export async function fetchWebsiteDetails(domain: string): Promise<WebsiteDetails> {
-  const [hostingIp, whois] = await Promise.all([
+  const [hostingIp, hostedBy, whois] = await Promise.all([
     fetchHostingIp(domain),
+    fetchHostedBy(domain),
     fetchDomainWhois(domain),
   ]);
 
   return {
     domain,
     hostingIp,
+    hostedBy,
     registrar: whois.registrar,
     phone: whois.phone,
     mailingAddress: whois.mailingAddress,
