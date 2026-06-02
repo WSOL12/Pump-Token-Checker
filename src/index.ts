@@ -38,6 +38,7 @@ interface JupiterTokenInfo {
   graduatedAt: string | null;
   graduatedPool: string | null;
   twitter?: string | null;
+  telegram?: string | null;
   website?: string | null;
   organicScore?: number | null;
   organicScoreLabel?: string | null;
@@ -63,6 +64,7 @@ interface TokenCheckResult {
     createdAt: string | null;
     createdAtTimestamp: number | null;
     twitter: string | null;
+    telegram: string | null;
     website: string | null;
     organicScore: number | null;
     organicScoreLabel: string | null;
@@ -268,6 +270,7 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
   createdAt: string | null;
   createdAtTimestamp: number | null;
   twitter: string | null;
+  telegram: string | null;
   website: string | null;
   organicScore: number | null;
   organicScoreLabel: string | null;
@@ -307,6 +310,7 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
     const createdAtTimestamp = createdAt ? new Date(createdAt).getTime() : null;
 
     const twitter = tokenInfo.twitter || null;
+    const telegram = tokenInfo.telegram || null;
     const website = tokenInfo.website || null;
     const organicScore = tokenInfo.organicScore ?? null;
     const organicScoreLabel = tokenInfo.organicScoreLabel || null;
@@ -318,6 +322,7 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
       createdAt,
       createdAtTimestamp,
       twitter,
+      telegram,
       website,
       organicScore,
       organicScoreLabel,
@@ -471,6 +476,7 @@ async function checkTokenProfile(
             createdAt: gradInfo.createdAt,
             createdAtTimestamp: gradInfo.createdAtTimestamp,
             twitter: gradInfo.twitter,
+            telegram: gradInfo.telegram,
             website: gradInfo.website,
             organicScore: gradInfo.organicScore,
             organicScoreLabel: gradInfo.organicScoreLabel,
@@ -499,6 +505,7 @@ async function checkTokenProfile(
             createdAt: gradInfo.createdAt,
             createdAtTimestamp: gradInfo.createdAtTimestamp,
             twitter: gradInfo.twitter,
+            telegram: gradInfo.telegram,
             website: gradInfo.website,
             organicScore: gradInfo.organicScore,
             organicScoreLabel: gradInfo.organicScoreLabel,
@@ -550,6 +557,7 @@ async function checkTokenProfile(
             createdAt: null,
             createdAtTimestamp: null,
             twitter: null,
+            telegram: null,
             website: null,
             organicScore: null,
             organicScoreLabel: null,
@@ -851,6 +859,7 @@ async function saveApprovedTokenIncremental(
       graduatedAt: result.graduationInfo.graduatedAt,
       twitter: result.graduationInfo.twitter,
       website: result.graduationInfo.website,
+      telegram: result.graduationInfo.telegram,
       organicScore: result.graduationInfo.organicScore,
       organicScoreLabel: result.graduationInfo.organicScoreLabel,
       athPrice: result.graduationInfo.athPrice,
@@ -937,6 +946,7 @@ async function exportApprovedTokensToCSV(
       "Token Address",
       "GMGN URL",
       "Twitter URL",
+      "Telegram URL",
       "Website URL",
       "Website Hosting IP Address",
       "It is hosted by",
@@ -1002,6 +1012,7 @@ async function exportApprovedTokensToCSV(
         escapeCSV(token.tokenAddress || ""),
         escapeCSV(token.gmgnUrl || ""),
         escapeCSV(token.migration?.twitter || ""),
+        escapeCSV(token.migration?.telegram || ""),
         escapeCSV(token.migration?.website || ""),
         escapeCSV(token.migration?.websiteDetails?.hostingIp || ""),
         escapeCSV(token.migration?.websiteDetails?.hostedBy || ""),
@@ -1120,6 +1131,7 @@ async function saveApprovedTokens(
           createdAt: r.graduationInfo.createdAt,
           graduatedAt: r.graduationInfo.graduatedAt,
           twitter: r.graduationInfo.twitter,
+          telegram: r.graduationInfo.telegram,
           website: r.graduationInfo.website,
           organicScore: r.graduationInfo.organicScore,
           organicScoreLabel: r.graduationInfo.organicScoreLabel,
