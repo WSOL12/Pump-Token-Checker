@@ -5,6 +5,8 @@ export const DATA_DIR = "data";
 export const APPROVED_TOKENS_JSON = join(DATA_DIR, "approved_tokens.json");
 export const APPROVED_TOKENS_CSV = join(DATA_DIR, "approved_tokens.csv");
 export const UNAPPROVED_TOKENS_JSON = join(DATA_DIR, "unapproved_tokens.json");
+export const UNAPPROVED_TOKENS_CSV = join(DATA_DIR, "unapproved_tokens.csv");
+export const ALL_TOKENS_CSV = join(DATA_DIR, "all_tokens.csv");
 export const TOKENS_WITH_MULTIPLE_POOLS_JSON = join(DATA_DIR, "tokens_with_multiple_pools.json");
 
 async function fileExists(path: string): Promise<boolean> {

@@ -253,6 +253,8 @@ async function exportApprovedTokensToCSV(
     "First Boost Before Migration",
     "First Boost vs Migration Time",
     "First Boost vs Migration Time (ms)",
+    "First Swap SOL Amount",
+    "First Buy Creator Fee (SOL)",
   ];
 
   // Build CSV rows
@@ -316,6 +318,8 @@ async function exportApprovedTokensToCSV(
         : "",
       escapeCSV(token.boost?.firstBoostVsMigration?.time || ""),
       escapeCSV(token.boost?.firstBoostVsMigration?.timeMs?.toString() || ""),
+      escapeCSV(token.launch?.firstSwapSol?.toString() || ""),
+      escapeCSV(token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
     ];
     rows.push(row.join(","));
   });

@@ -1,7 +1,6 @@
 import { writeFile, readFile } from "fs/promises";
 import "dotenv/config";
 import {
-  APPROVED_TOKENS_CSV,
   APPROVED_TOKENS_JSON,
   UNAPPROVED_TOKENS_JSON,
   ensureDataDir,
@@ -11,6 +10,13 @@ import {
   fetchWebsiteDetails,
   type WebsiteDetails,
 } from "./website-info.js";
+import { exportAllTokenCsvFiles } from "./approved-csv.js";
+import {
+  fetchFirstBuyInfo,
+  HELIUS_RPC_DELAY_MS,
+  toLaunchJson,
+  type FirstBuyInfo,
+} from "./launch-tx.js";
 
 interface Order {
   chainId: string;
@@ -107,6 +113,7 @@ interface TokenCheckResult {
       timeDifferenceFormatted: string | null;
     };
   };
+  launchInfo?: FirstBuyInfo | null;
 }
 
 /**
@@ -711,6 +718,14 @@ async function checkMultipleTokens(
       }
     }
 
+    if (batchResults.length > 0 && process.env.HELIUS_RPC_URL) {
+      console.log(`    🔗 Fetching first buy info for ${batchResults.length} token(s)...`);
+      for (const result of batchResults) {
+        result.launchInfo = await fetchFirstBuyInfo(result.tokenAddress);
+        await new Promise((resolve) => setTimeout(resolve, HELIUS_RPC_DELAY_MS));
+      }
+    }
+
     const tokensWithWebsite = batchResults.filter((r) => r.graduationInfo?.website);
     if (tokensWithWebsite.length > 0) {
       console.log(`    🌐 Fetching website info for ${tokensWithWebsite.length} token(s)...`);
@@ -907,6 +922,7 @@ async function saveApprovedTokenIncremental(
         time: result.boostInfo.firstBoostVsMigration.timeDifferenceFormatted,
       } : null,
     } : null,
+    launch: toLaunchJson(result.launchInfo),
   };
 
   approvedMap.set(result.tokenAddress, tokenData);
@@ -925,162 +941,6 @@ async function saveApprovedTokenIncremental(
 }
 
 /**
- * Export approved tokens to CSV format with serial index
- */
-async function exportApprovedTokensToCSV(
-  filename: string = APPROVED_TOKENS_JSON,
-  csvFilename: string = APPROVED_TOKENS_CSV
-): Promise<void> {
-  try {
-    const content = await readFile(filename, "utf-8");
-    const data = JSON.parse(content);
-    
-    if (!data.tokens || !Array.isArray(data.tokens)) {
-      console.log("No tokens found in JSON file");
-      return;
-    }
-
-    // CSV Headers
-    const headers = [
-      "Index",
-      "Token Address",
-      "GMGN URL",
-      "Twitter URL",
-      "Telegram URL",
-      "Website URL",
-      "Website Hosting IP Address",
-      "It is hosted by",
-      "Registrar",
-      "Phone",
-      "Mailing Address",
-      "Registrar Contact Phone",
-      "Registrar Contact Email",
-      "Registered On",
-      "Expires On",
-      "Updated On",
-      "Organic Score",
-      "Organic Score Label",
-      "ATH Price",
-      "ATH Marketcap",
-      "Highlighted",
-      "Created Date",
-      "Graduated Date",
-      "Creation to Migration Time",
-      "Creation to Migration Time (ms)",
-      "TokenProfile Approved Before Migration",
-      "TokenProfile vs Migration Time",
-      "TokenProfile vs Migration Time (ms)",
-      "Has TokenAd",
-      "TokenAd Count",
-      "TokenAd Payment Date",
-      "TokenAd Approved Before Migration",
-      "TokenAd vs Migration Time",
-      "TokenAd vs Migration Time (ms)",
-      "Has CommunityTakeover",
-      "CommunityTakeover Count",
-      "CommunityTakeover Payment Date",
-      "CommunityTakeover Approved Before Migration",
-      "CommunityTakeover vs Migration Time",
-      "CommunityTakeover vs Migration Time (ms)",
-      "Has Boosts",
-      "Boost Count",
-      "Total Boost Amount",
-      "First Boost Amount",
-      "First Boost Date",
-      "First Boost Before Migration",
-      "First Boost vs Migration Time",
-      "First Boost vs Migration Time (ms)"
-    ];
-
-    // Helper function to escape CSV values
-    const escapeCSV = (value: any): string => {
-      if (value === null || value === undefined) return "";
-      const str = String(value);
-      // If contains comma, quote, or newline, wrap in quotes and escape quotes
-      if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-        return `"${str.replace(/"/g, '""')}"`;
-      }
-      return str;
-    };
-
-    // Build CSV rows
-    const rows: string[] = [headers.map(h => escapeCSV(h)).join(",")];
-    
-    data.tokens.forEach((token: any, index: number) => {
-      const row = [
-        (index + 1).toString(), // Serial index
-        escapeCSV(token.tokenAddress || ""),
-        escapeCSV(token.gmgnUrl || ""),
-        escapeCSV(token.migration?.twitter || ""),
-        escapeCSV(token.migration?.telegram || ""),
-        escapeCSV(token.migration?.website || ""),
-        escapeCSV(token.migration?.websiteDetails?.hostingIp || ""),
-        escapeCSV(token.migration?.websiteDetails?.hostedBy || ""),
-        escapeCSV(token.migration?.websiteDetails?.registrar || ""),
-        escapeCSV(token.migration?.websiteDetails?.phone || ""),
-        escapeCSV(token.migration?.websiteDetails?.mailingAddress || ""),
-        escapeCSV(token.migration?.websiteDetails?.registrarContactPhone || ""),
-        escapeCSV(token.migration?.websiteDetails?.registrarContactEmail || ""),
-        escapeCSV(token.migration?.websiteDetails?.registeredOn || ""),
-        escapeCSV(token.migration?.websiteDetails?.expiresOn || ""),
-        escapeCSV(token.migration?.websiteDetails?.updatedOn || ""),
-        escapeCSV(token.migration?.organicScore?.toString() || ""),
-        escapeCSV(token.migration?.organicScoreLabel || ""),
-        escapeCSV(token.migration?.athPrice?.toString() || ""),
-        escapeCSV(token.migration?.athMarketcap?.toString() || ""),
-        token.highlighted ? "Yes" : "No",
-        escapeCSV(token.migration?.createdAt || ""),
-        escapeCSV(token.migration?.graduatedAt || ""),
-        escapeCSV(token.migration?.creationToMigration || ""),
-        escapeCSV(token.migration?.creationToMigrationMs?.toString() || ""),
-        (token.migration && token.migration.isApprovedBeforeMigration !== null)
-          ? (token.migration.isApprovedBeforeMigration ? "Yes" : "No")
-          : "",
-        escapeCSV(token.migration?.approvedVsMigration || ""),
-        escapeCSV(token.migration?.approvedVsMigrationMs?.toString() || ""),
-        token.tokenAd?.hasTokenAd ? "Yes" : "No",
-        escapeCSV(token.tokenAd?.adCount?.toString() || "0"),
-        escapeCSV(token.tokenAd?.paymentDate || ""),
-        (token.tokenAd && token.tokenAd.isApprovedBeforeMigration !== null)
-          ? (token.tokenAd.isApprovedBeforeMigration ? "Yes" : "No")
-          : "",
-        escapeCSV(token.tokenAd?.approvedVsMigration || ""),
-        escapeCSV(token.tokenAd?.approvedVsMigrationMs?.toString() || ""),
-        token.communityTakeover?.hasCommunityTakeover ? "Yes" : "No",
-        escapeCSV(token.communityTakeover?.takeoverCount?.toString() || "0"),
-        escapeCSV(token.communityTakeover?.paymentDate || ""),
-        (token.communityTakeover && token.communityTakeover.isApprovedBeforeMigration !== null)
-          ? (token.communityTakeover.isApprovedBeforeMigration ? "Yes" : "No")
-          : "",
-        escapeCSV(token.communityTakeover?.approvedVsMigration || ""),
-        escapeCSV(token.communityTakeover?.approvedVsMigrationMs?.toString() || ""),
-        token.boost?.hasBoosts ? "Yes" : "No",
-        escapeCSV(token.boost?.count?.toString() || "0"),
-        escapeCSV(token.boost?.totalAmount?.toString() || "0"),
-        escapeCSV(token.boost?.firstBoost?.amount?.toString() || ""),
-        escapeCSV(token.boost?.firstBoost?.date || ""),
-        (token.boost?.firstBoostVsMigration && token.boost.firstBoostVsMigration.isBeforeMigration !== null)
-          ? (token.boost.firstBoostVsMigration.isBeforeMigration ? "Yes" : "No")
-          : "",
-        escapeCSV(token.boost?.firstBoostVsMigration?.time || ""),
-        escapeCSV(token.boost?.firstBoostVsMigration?.timeMs?.toString() || "")
-      ];
-      
-      rows.push(row.join(","));
-    });
-
-    const csvContent = rows.join("\n");
-    await writeFile(csvFilename, csvContent, "utf-8");
-    console.log(`\n✓ Exported ${data.tokens.length} token(s) to ${csvFilename}`);
-  } catch (error) {
-    console.error(`\n❌ Error exporting to CSV: ${error}`);
-    if (error instanceof Error) {
-      console.error(`   ${error.message}`);
-    }
-  }
-}
-
-/**
  * Save unapproved token incrementally (append to existing)
  */
 async function saveUnapprovedTokenIncremental(
@@ -1096,6 +956,7 @@ async function saveUnapprovedTokenIncremental(
     tokenAddress: result.tokenAddress,
     gmgnUrl: `https://gmgn.ai/sol/token/${result.tokenAddress}`,
     error: result.error || null,
+    launch: toLaunchJson(result.launchInfo),
   };
 
   unapprovedMap.set(result.tokenAddress, tokenData);
@@ -1179,6 +1040,7 @@ async function saveApprovedTokens(
             time: r.boostInfo.firstBoostVsMigration.timeDifferenceFormatted,
           } : null,
         } : null,
+        launch: toLaunchJson(r.launchInfo),
       };
     });
 
@@ -1205,6 +1067,7 @@ async function saveUnapprovedTokens(
       tokenAddress: r.tokenAddress,
       gmgnUrl: `https://gmgn.ai/sol/token/${r.tokenAddress}`,
       error: r.error || null,
+      launch: toLaunchJson(r.launchInfo),
     }));
 
   const output = {
@@ -1287,7 +1150,7 @@ async function main() {
   
   // Always try to export CSV if JSON file exists (even if no new tokens in this run)
   console.log("\n=== Exporting to CSV ===");
-  await exportApprovedTokensToCSV();
+  await exportAllTokenCsvFiles();
 
   if (withoutTokenProfile.length > 0) {
     console.log(`✓ ${withoutTokenProfile.length} unapproved token(s) saved to ${UNAPPROVED_TOKENS_JSON}`);
