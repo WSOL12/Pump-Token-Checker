@@ -19,7 +19,7 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Ensure data/ exists and move legacy root-level output files if present.
+ * Ensure data/ exists and move legacy root-level   output files if present.
  */
 export async function ensureDataDir(): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });

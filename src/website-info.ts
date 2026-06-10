@@ -426,7 +426,7 @@ export async function fetchHostedBy(domain: string): Promise<string | null> {
 }
 
 /**
- * Fetch registrar, phone, and mailing address from RDAP
+ * Fetch registrar, phone, and mailing   address from RDAP
  */
 export async function fetchDomainWhois(domain: string): Promise<{
   registrar: string | null;

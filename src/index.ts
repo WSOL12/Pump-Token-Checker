@@ -74,8 +74,6 @@ interface TokenCheckResult {
     website: string | null;
     organicScore: number | null;
     organicScoreLabel: string | null;
-    athPrice: number | null;
-    athMarketcap: number | null;
     isApprovedBeforeMigration: boolean | null;
     timeDifferenceMs: number | null;
     timeDifferenceFormatted: string | null;
@@ -117,158 +115,6 @@ interface TokenCheckResult {
 }
 
 /**
- * Fetch ATH price from Bitquery API (batch version - up to 10 tokens per request)
- */
-async function fetchATHPriceBatch(tokenAddresses: string[]): Promise<Map<string, {
-  athPrice: number | null;
-  athMarketcap: number | null;
-}>> {
-  const apiKey = process.env.BITQUERY_API_KEY;
-  const resultMap = new Map<string, { athPrice: number | null; athMarketcap: number | null }>();
-  
-  if (!apiKey) {
-    // Bitquery API key is optional - return empty map if not provided
-    return resultMap;
-  }
-
-  if (tokenAddresses.length === 0) {
-    return resultMap;
-  }
-
-  // Limit to 10 tokens per batch
-  const batchSize = 10;
-  
-  for (let i = 0; i < tokenAddresses.length; i += batchSize) {
-    const batch = tokenAddresses.slice(i, i + batchSize);
-    
-    try {
-      // Format token addresses for GraphQL query
-      const tokenAddressList = batch.map(addr => `"${addr}"`).join(", ");
-      
-      const query = `{
-        Solana(dataset: combined) {
-          DEXTradeByTokens(
-            limitBy: { by: Trade_Currency_MintAddress, count: 1 }
-            where: {
-              Trade: {
-                Currency: {
-                  MintAddress: {
-                    in: [${tokenAddressList}]
-                  }
-                }
-                Side: {
-                  Currency: {
-                    MintAddress: {
-                      in: [
-                        "11111111111111111111111111111111",
-                        "So11111111111111111111111111111111111111112"
-                      ]
-                    }
-                  }
-                }
-              }
-              Block: { Time: { since: "2025-05-03T06:37:00Z" } }
-            }
-          ) {
-            Trade {
-              Currency {
-                MintAddress
-              }
-              PriceInUSD: PriceInUSD(maximum: Trade_PriceInUSD)
-            }
-            max: quantile(of: Trade_PriceInUSD, level: 0.98)
-            ATH_Marketcap: calculate(expression: "$max * 1000000000")
-          }
-        }
-      }`;
-
-      const response = await fetch("https://streaming.bitquery.io/graphql", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({ query, variables: "{}" }),
-      });
-
-      if (!response.ok) {
-        let errorDetails = "";
-        try {
-          const errorData = await response.json();
-          errorDetails = JSON.stringify(errorData);
-        } catch {
-          errorDetails = await response.text();
-        }
-        console.error("❌ Bitquery API error:", response.status, response.statusText, errorDetails.substring(0, 200));
-        // Continue with next batch or return partial results
-        continue;
-      }
-
-      const data = (await response.json()) as {
-        data?: {
-          Solana?: {
-            DEXTradeByTokens?: Array<{
-              max?: number;
-              ATH_Marketcap?: number;
-              Trade?: {
-                Currency?: {
-                  MintAddress?: string;
-                };
-                PriceInUSD?: number;
-              };
-            }>;
-          };
-        };
-      };
-
-      if (!data.data?.Solana?.DEXTradeByTokens) {
-        continue;
-      }
-
-      // Process results and map to token addresses
-      for (const tokenResult of data.data.Solana.DEXTradeByTokens) {
-        const mintAddress = tokenResult.Trade?.Currency?.MintAddress;
-        if (mintAddress && batch.includes(mintAddress)) {
-          resultMap.set(mintAddress, {
-            // ATH price: use Bitquery's PriceInUSD(maximum: Trade_PriceInUSD)
-            athPrice: tokenResult.Trade?.PriceInUSD ?? null,
-            // ATH marketcap: use Bitquery's ATH_Marketcap as returned
-            athMarketcap: tokenResult.ATH_Marketcap ?? null,
-          });
-        }
-      }
-
-      // Initialize null values for tokens that weren't found in the response
-      for (const tokenAddress of batch) {
-        if (!resultMap.has(tokenAddress)) {
-          resultMap.set(tokenAddress, {
-            athPrice: null,
-            athMarketcap: null,
-          });
-        }
-      }
-
-      // Small delay between batch requests
-      if (i + batchSize < tokenAddresses.length) {
-        await new Promise((resolve) => setTimeout(resolve, 200));
-      }
-    } catch (error) {
-      // Silently fail for this batch - initialize null values
-      for (const tokenAddress of batch) {
-        if (!resultMap.has(tokenAddress)) {
-          resultMap.set(tokenAddress, {
-            athPrice: null,
-            athMarketcap: null,
-          });
-        }
-      }
-    }
-  }
-
-  return resultMap;
-}
-
-/**
  * Fetch token graduation info from Jupiter API
  */
 async function fetchGraduationInfo(tokenAddress: string): Promise<{
@@ -281,8 +127,6 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
   website: string | null;
   organicScore: number | null;
   organicScoreLabel: string | null;
-  athPrice: number | null;
-  athMarketcap: number | null;
 } | null> {
   const apiKey = process.env.JUPITER_API_KEY;
   
@@ -322,7 +166,6 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
     const organicScore = tokenInfo.organicScore ?? null;
     const organicScoreLabel = tokenInfo.organicScoreLabel || null;
 
-    // ATH price will be fetched in batches later - return null for now
     return {
       graduatedAt,
       graduatedAtTimestamp,
@@ -333,8 +176,6 @@ async function fetchGraduationInfo(tokenAddress: string): Promise<{
       website,
       organicScore,
       organicScoreLabel,
-      athPrice: null,
-      athMarketcap: null,
     };
   } catch (error) {
     // Silently fail - graduation info is optional
@@ -487,8 +328,6 @@ async function checkTokenProfile(
             website: gradInfo.website,
             organicScore: gradInfo.organicScore,
             organicScoreLabel: gradInfo.organicScoreLabel,
-            athPrice: gradInfo.athPrice,
-            athMarketcap: gradInfo.athMarketcap,
             isApprovedBeforeMigration,
             timeDifferenceMs,
             timeDifferenceFormatted: formatTimeDifference(timeDifferenceMs),
@@ -516,8 +355,6 @@ async function checkTokenProfile(
             website: gradInfo.website,
             organicScore: gradInfo.organicScore,
             organicScoreLabel: gradInfo.organicScoreLabel,
-            athPrice: gradInfo.athPrice,
-            athMarketcap: gradInfo.athMarketcap,
             isApprovedBeforeMigration: null,
             timeDifferenceMs: null,
             timeDifferenceFormatted: null,
@@ -568,8 +405,6 @@ async function checkTokenProfile(
             website: null,
             organicScore: null,
             organicScoreLabel: null,
-            athPrice: null,
-            athMarketcap: null,
             isApprovedBeforeMigration: null,
             timeDifferenceMs: null,
             timeDifferenceFormatted: null,
@@ -699,24 +534,6 @@ async function checkMultipleTokens(
     });
 
     const batchResults = await Promise.all(batchPromises);
-    
-    // Collect token addresses that need ATH price data (all tokens in batch)
-    const tokensForATH = batchResults.map(r => r.tokenAddress);
-    
-    // Fetch ATH prices in batches (10 tokens per request)
-    if (tokensForATH.length > 0 && process.env.BITQUERY_API_KEY) {
-      console.log(`    📊 Fetching ATH prices for ${tokensForATH.length} token(s) in batch...`);
-      const athPriceMap = await fetchATHPriceBatch(tokensForATH);
-      
-      // Update results with ATH price data
-      for (const result of batchResults) {
-        if (result.graduationInfo && athPriceMap.has(result.tokenAddress)) {
-          const athData = athPriceMap.get(result.tokenAddress)!;
-          result.graduationInfo.athPrice = athData.athPrice;
-          result.graduationInfo.athMarketcap = athData.athMarketcap;
-        }
-      }
-    }
 
     if (batchResults.length > 0 && process.env.HELIUS_RPC_URL) {
       console.log(`    🔗 Fetching first buy info for ${batchResults.length} token(s)...`);
@@ -877,8 +694,6 @@ async function saveApprovedTokenIncremental(
       telegram: result.graduationInfo.telegram,
       organicScore: result.graduationInfo.organicScore,
       organicScoreLabel: result.graduationInfo.organicScoreLabel,
-      athPrice: result.graduationInfo.athPrice,
-      athMarketcap: result.graduationInfo.athMarketcap,
       isApprovedBeforeMigration: result.graduationInfo.isApprovedBeforeMigration,
       approvedVsMigrationMs: result.graduationInfo.timeDifferenceMs,
       approvedVsMigration: result.graduationInfo.timeDifferenceFormatted,
@@ -996,8 +811,6 @@ async function saveApprovedTokens(
           website: r.graduationInfo.website,
           organicScore: r.graduationInfo.organicScore,
           organicScoreLabel: r.graduationInfo.organicScoreLabel,
-          athPrice: r.graduationInfo.athPrice,
-          athMarketcap: r.graduationInfo.athMarketcap,
           isApprovedBeforeMigration: r.graduationInfo.isApprovedBeforeMigration,
           approvedVsMigrationMs: r.graduationInfo.timeDifferenceMs,
           approvedVsMigration: r.graduationInfo.timeDifferenceFormatted,
