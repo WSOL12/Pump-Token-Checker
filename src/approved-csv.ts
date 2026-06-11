@@ -65,6 +65,10 @@ const APPROVED_HEADERS = [
   "First Boost vs Migration Time (ms)",
   "First Swap SOL Amount",
   "First Buy Creator Fee (SOL)",
+  "Launch Note",
+  "Has Fee Sharing",
+  "Launch Fee Shareholders",
+  "Fee Shareholders",
 ];
 
 const UNAPPROVED_HEADERS = [
@@ -75,6 +79,10 @@ const UNAPPROVED_HEADERS = [
   "First Tx Signature",
   "First Swap SOL Amount",
   "First Buy Creator Fee (SOL)",
+  "Launch Note",
+  "Has Fee Sharing",
+  "Launch Fee Shareholders",
+  "Fee Shareholders",
 ];
 
 const ALL_TOKENS_HEADERS = [
@@ -150,8 +158,12 @@ function buildApprovedTokenRow(token: any, index: number): string[] {
       : "",
     escapeCSV(token.boost?.firstBoostVsMigration?.time || ""),
     escapeCSV(token.boost?.firstBoostVsMigration?.timeMs?.toString() || ""),
-    escapeCSV(token.launch?.firstSwapSol?.toString() || ""),
-    escapeCSV(token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
+    escapeCSV(token.launch?.firstSwapDisplay || token.launch?.firstSwapSol?.toString() || ""),
+    escapeCSV(token.launch?.firstBuyCreatorFeeDisplay || token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
+    escapeCSV(token.launch?.launchNote || ""),
+    token.launch?.hasFeeSharingConfig ? "Yes" : token.launch?.hasFeeSharingConfig === false ? "No" : "",
+    escapeCSV(token.launch?.launchFeeShareholders || ""),
+    escapeCSV(token.launch?.feeShareholders || ""),
   ];
 }
 
@@ -162,8 +174,12 @@ function buildUnapprovedTokenRow(token: any, index: number): string[] {
     escapeCSV(token.gmgnUrl || ""),
     escapeCSV(token.error || ""),
     escapeCSV(token.launch?.firstTxSignature || ""),
-    escapeCSV(token.launch?.firstSwapSol?.toString() || ""),
-    escapeCSV(token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
+    escapeCSV(token.launch?.firstSwapDisplay || token.launch?.firstSwapSol?.toString() || ""),
+    escapeCSV(token.launch?.firstBuyCreatorFeeDisplay || token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
+    escapeCSV(token.launch?.launchNote || ""),
+    token.launch?.hasFeeSharingConfig ? "Yes" : token.launch?.hasFeeSharingConfig === false ? "No" : "",
+    escapeCSV(token.launch?.launchFeeShareholders || ""),
+    escapeCSV(token.launch?.feeShareholders || ""),
   ];
 }
 

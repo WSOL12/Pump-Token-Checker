@@ -10,7 +10,13 @@ const cases: Array<[string, number, number]> = [
 
 for (const [mint, expSwap, expFee] of cases) {
   const info = await fetchFirstBuyInfo(mint);
-  const okSwap = info !== null && Math.abs(info.firstSwapSol - expSwap) < 1e-6;
-  const okFee = info !== null && Math.abs(info.firstBuyCreatorFeeSol - expFee) < 1e-9;
+  const okSwap =
+    info !== null &&
+    info.firstSwapUnit === "SOL" &&
+    Math.abs(info.firstSwapAmount - expSwap) < 1e-6;
+  const okFee =
+    info !== null &&
+    info.firstBuyCreatorFeeUnit === "SOL" &&
+    Math.abs(info.firstBuyCreatorFeeAmount - expFee) < 1e-9;
   console.log(mint.slice(0, 8), info, okSwap && okFee ? "PASS" : "FAIL");
 }

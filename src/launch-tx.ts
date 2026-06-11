@@ -2,6 +2,14 @@ import { PublicKey } from "@solana/web3.js";
 
 const PUMP_PROGRAM_ID = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 const PUMP_PROGRAM = new PublicKey(PUMP_PROGRAM_ID);
+const PUMP_FEE_PROGRAM_ID = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ";
+const PUMP_FEE_PROGRAM = new PublicKey(PUMP_FEE_PROGRAM_ID);
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+const SHARING_CONFIG_DISCR = Buffer.from([216, 74, 9, 0, 56, 140, 93, 75]);
+const UPDATE_FEE_SHARES_DISCR = Buffer.from([189, 13, 136, 99, 187, 164, 237, 35]);
+const UPDATE_FEE_SHARES_V2_DISCR = Buffer.from([111, 251, 179, 16, 100, 228, 230, 161]);
+const CREATE_FEE_SHARING_CONFIG_DISCR = Buffer.from([195, 78, 86, 76, 111, 52, 251, 213]);
 
 const ACCOUNT_RENT_LAMPORTS = new Set([1691280, 2039280, 2074080, 2519520, 1294560]);
 
@@ -16,6 +24,7 @@ const BUY_IX = {
 const CREATE_V2_IX = "d6904cec5f8b31b4";
 
 type BuyKind = keyof typeof BUY_IX;
+export type SwapUnit = "SOL" | "USDC";
 
 const CREATOR_VAULT_INDEX: Record<BuyKind, number> = {
   buy: 9,
@@ -38,27 +47,104 @@ const BONDING_CURVE_INDEX: Record<BuyKind, number> = {
   buyExactQuoteInV2: 10,
 };
 
+/** Scan this many oldest txs — tx #1 may be CreateFeeSharingConfig before CreateV2+Buy. */
+const GTFA_TX_LIMIT = 5;
+
 export const HELIUS_RPC_DELAY_MS = 50;
+
+export interface FeeShareholder {
+  address: string;
+  shareBps: number;
+}
 
 export interface FirstBuyInfo {
   firstTxSignature: string;
+  firstSwapAmount: number;
+  firstSwapUnit: SwapUnit;
+  firstBuyCreatorFeeAmount: number;
+  firstBuyCreatorFeeUnit: SwapUnit;
+  /** e.g. "Oldest tx #1 was CreateFeeSharingConfig (not the launch buy)" */
+  launchNote?: string;
+  /** Numeric SOL when swap is SOL; 0 when USDC pair */
   firstSwapSol: number;
+  /** Numeric SOL fee when fee is SOL; 0 when USDC pair */
   firstBuyCreatorFeeSol: number;
+  /** Coin opted into pump fee-sharing (CreateFeeSharingConfig) */
+  hasFeeSharingConfig?: boolean;
+  /** Shareholders at launch buy time — `wallet:bps` comma-separated */
+  launchFeeShareholders?: string;
+  /** Current on-chain shareholders who receive creator fees — `wallet:bps` comma-separated */
+  feeShareholders?: string;
+}
+
+export function formatFeeShareholders(shareholders: FeeShareholder[]): string {
+  return shareholders.map((s) => `${s.address}:${s.shareBps}`).join(",");
+}
+
+export function formatFirstSwapDisplay(info: FirstBuyInfo): string {
+  if (info.firstSwapUnit === "USDC") {
+    return `${info.firstSwapAmount} USDC`;
+  }
+  return String(info.firstSwapAmount);
+}
+
+export function formatCreatorFeeDisplay(info: FirstBuyInfo): string {
+  if (info.firstBuyCreatorFeeUnit === "USDC") {
+    return `${info.firstBuyCreatorFeeAmount} USDC`;
+  }
+  return String(info.firstBuyCreatorFeeAmount);
 }
 
 export function toLaunchJson(launchInfo: FirstBuyInfo | null | undefined) {
   if (!launchInfo) {
     return {
       firstTxSignature: null,
+      firstSwapAmount: null,
+      firstSwapUnit: null,
+      firstBuyCreatorFeeAmount: null,
+      firstBuyCreatorFeeUnit: null,
+      firstSwapDisplay: null,
+      firstBuyCreatorFeeDisplay: null,
+      launchNote: null,
       firstSwapSol: null,
       firstBuyCreatorFeeSol: null,
+      hasFeeSharingConfig: null,
+      launchFeeShareholders: null,
+      feeShareholders: null,
     };
   }
 
   return {
     firstTxSignature: launchInfo.firstTxSignature,
-    firstSwapSol: launchInfo.firstSwapSol,
-    firstBuyCreatorFeeSol: launchInfo.firstBuyCreatorFeeSol,
+    firstSwapAmount: launchInfo.firstSwapAmount,
+    firstSwapUnit: launchInfo.firstSwapUnit,
+    firstBuyCreatorFeeAmount: launchInfo.firstBuyCreatorFeeAmount,
+    firstBuyCreatorFeeUnit: launchInfo.firstBuyCreatorFeeUnit,
+    firstSwapDisplay: formatFirstSwapDisplay(launchInfo),
+    firstBuyCreatorFeeDisplay: formatCreatorFeeDisplay(launchInfo),
+    launchNote: launchInfo.launchNote ?? null,
+    firstSwapSol: launchInfo.firstSwapUnit === "SOL" ? launchInfo.firstSwapAmount : null,
+    firstBuyCreatorFeeSol:
+      launchInfo.firstBuyCreatorFeeUnit === "SOL" ? launchInfo.firstBuyCreatorFeeAmount : null,
+    hasFeeSharingConfig: launchInfo.hasFeeSharingConfig ?? null,
+    launchFeeShareholders: launchInfo.launchFeeShareholders ?? null,
+    feeShareholders: launchInfo.feeShareholders ?? null,
+  };
+}
+
+interface ParsedInstructionInfo {
+  source?: string;
+  authority?: string;
+  destination?: string;
+  newAccount?: string;
+  mint?: string;
+  lamports?: number | string;
+  amount?: string;
+  tokenAmount?: {
+    uiAmount?: number | null;
+    uiAmountString?: string;
+    amount?: string;
+    decimals?: number;
   };
 }
 
@@ -81,16 +167,18 @@ interface RpcTransaction {
       instructions: Array<{
         parsed?: {
           type?: string;
-          info?: {
-            source?: string;
-            destination?: string;
-            newAccount?: string;
-            lamports?: number | string;
-          };
+          info?: ParsedInstructionInfo;
         };
       }>;
     }>;
   } | null;
+}
+
+interface ParsedBuyAmounts {
+  firstSwapAmount: number;
+  firstSwapUnit: SwapUnit;
+  firstBuyCreatorFeeAmount: number;
+  firstBuyCreatorFeeUnit: SwapUnit;
 }
 
 function getRpcUrl(): string | null {
@@ -115,6 +203,187 @@ export function userVolumeAccumulatorPda(user: string): string {
     PUMP_PROGRAM
   );
   return pda.toBase58();
+}
+
+export function feeSharingConfigPda(mintAddress: string): string {
+  const [pda] = PublicKey.findProgramAddressSync(
+    [Buffer.from("sharing-config"), new PublicKey(mintAddress).toBuffer()],
+    PUMP_FEE_PROGRAM
+  );
+  return pda.toBase58();
+}
+
+function discriminatorMatches(data: Buffer, expected: Buffer): boolean {
+  return data.length >= 8 && data.subarray(0, 8).equals(expected);
+}
+
+export function decodeSharingConfigAccount(data: Buffer): FeeShareholder[] | null {
+  if (data.length < 8 || !discriminatorMatches(data, SHARING_CONFIG_DISCR)) {
+    return null;
+  }
+
+  let offset = 8;
+  offset += 1; // bump
+  offset += 1; // version
+  offset += 1; // status
+  offset += 32; // mint
+  offset += 32; // admin
+  offset += 1; // adminRevoked
+
+  if (offset + 4 > data.length) return null;
+
+  const count = data.readUInt32LE(offset);
+  offset += 4;
+
+  const shareholders: FeeShareholder[] = [];
+  for (let i = 0; i < count; i++) {
+    if (offset + 34 > data.length) return null;
+    const address = new PublicKey(data.subarray(offset, offset + 32)).toBase58();
+    offset += 32;
+    const shareBps = data.readUInt16LE(offset);
+    offset += 2;
+    shareholders.push({ address, shareBps });
+  }
+
+  return shareholders;
+}
+
+function parseShareholdersFromPumpFeesIxData(data: string | undefined): FeeShareholder[] | null {
+  if (!data) return null;
+
+  let bytes: Buffer;
+  try {
+    bytes = decodeBase58(data);
+  } catch {
+    return null;
+  }
+
+  if (
+    !discriminatorMatches(bytes, UPDATE_FEE_SHARES_DISCR) &&
+    !discriminatorMatches(bytes, UPDATE_FEE_SHARES_V2_DISCR)
+  ) {
+    return null;
+  }
+
+  let offset = 8;
+  if (offset + 4 > bytes.length) return null;
+
+  const count = bytes.readUInt32LE(offset);
+  offset += 4;
+
+  const shareholders: FeeShareholder[] = [];
+  for (let i = 0; i < count; i++) {
+    if (offset + 34 > bytes.length) return null;
+    const address = new PublicKey(bytes.subarray(offset, offset + 32)).toBase58();
+    offset += 32;
+    const shareBps = bytes.readUInt16LE(offset);
+    offset += 2;
+    shareholders.push({ address, shareBps });
+  }
+
+  return shareholders.length > 0 ? shareholders : null;
+}
+
+function txHasLogInstruction(tx: RpcTransaction, instructionName: string): boolean {
+  const logs = tx.meta?.logMessages ?? [];
+  return logs.some((line) => line.includes(`Instruction: ${instructionName}`));
+}
+
+function extractCreateFeeSharingConfigPayer(tx: RpcTransaction): string | null {
+  const keys = resolveAccountKeys(tx);
+
+  for (const ix of tx.transaction.message.instructions) {
+    if (programId(ix.programId, keys) !== PUMP_FEE_PROGRAM_ID) continue;
+
+    let bytes: Buffer;
+    try {
+      bytes = decodeBase58(ix.data ?? "");
+    } catch {
+      continue;
+    }
+
+    if (!discriminatorMatches(bytes, CREATE_FEE_SHARING_CONFIG_DISCR)) continue;
+
+    const accounts = resolveAccounts(ix.accounts, keys);
+    return accounts[2] ?? null;
+  }
+
+  return null;
+}
+
+function extractUpdateFeeSharesFromTx(tx: RpcTransaction): FeeShareholder[] | null {
+  const keys = resolveAccountKeys(tx);
+
+  for (const ix of tx.transaction.message.instructions) {
+    if (programId(ix.programId, keys) !== PUMP_FEE_PROGRAM_ID) continue;
+
+    const shareholders = parseShareholdersFromPumpFeesIxData(ix.data);
+    if (shareholders) return shareholders;
+  }
+
+  return null;
+}
+
+function scanLaunchFeeShareholders(
+  txs: Array<{ tx: RpcTransaction; signature: string }>,
+  launchBuyIndex: number
+): FeeShareholder[] | null {
+  let shareholders: FeeShareholder[] | null = null;
+
+  for (let i = 0; i < launchBuyIndex; i++) {
+    const { tx } = txs[i]!;
+
+    if (txHasLogInstruction(tx, "CreateFeeSharingConfig")) {
+      const payer = extractCreateFeeSharingConfigPayer(tx);
+      if (payer) {
+        shareholders = [{ address: payer, shareBps: 10_000 }];
+      }
+    }
+
+    const updated = extractUpdateFeeSharesFromTx(tx);
+    if (updated) {
+      shareholders = updated;
+    }
+  }
+
+  return shareholders;
+}
+
+async function fetchCurrentFeeShareholders(mintAddress: string): Promise<FeeShareholder[] | null> {
+  const { result } = await rpcCallWithError<{ value: { data: [string, string] } | null }>(
+    "getAccountInfo",
+    [feeSharingConfigPda(mintAddress), { encoding: "base64" }]
+  );
+
+  if (!result?.value?.data?.[0]) return null;
+
+  const data = Buffer.from(result.value.data[0], "base64");
+  return decodeSharingConfigAccount(data);
+}
+
+async function buildFeeSharingFields(
+  mintAddress: string,
+  txs: Array<{ tx: RpcTransaction; signature: string }>,
+  launchBuyIndex: number
+): Promise<Pick<FirstBuyInfo, "hasFeeSharingConfig" | "launchFeeShareholders" | "feeShareholders">> {
+  const launchShareholders = scanLaunchFeeShareholders(txs, launchBuyIndex);
+  const currentShareholders = await fetchCurrentFeeShareholders(mintAddress);
+
+  const hadCreateBeforeLaunch = txs
+    .slice(0, launchBuyIndex)
+    .some(({ tx }) => txHasLogInstruction(tx, "CreateFeeSharingConfig"));
+
+  const hasFeeSharingConfig = hadCreateBeforeLaunch || currentShareholders !== null;
+
+  return {
+    hasFeeSharingConfig,
+    launchFeeShareholders: launchShareholders
+      ? formatFeeShareholders(launchShareholders)
+      : undefined,
+    feeShareholders: currentShareholders
+      ? formatFeeShareholders(currentShareholders)
+      : undefined,
+  };
 }
 
 function decodeBase58(input: string): Buffer {
@@ -160,6 +429,21 @@ function programId(id: string | number | undefined, keys: string[]): string | un
   return typeof id === "number" ? keys[id] : id;
 }
 
+function payerMatches(info: ParsedInstructionInfo | undefined, user: string): boolean {
+  if (!info) return false;
+  return info.source === user || info.authority === user;
+}
+
+function tokenAmountToNumber(info: ParsedInstructionInfo): number {
+  const ta = info.tokenAmount;
+  if (ta?.uiAmount != null) return ta.uiAmount;
+  if (ta?.uiAmountString) return parseFloat(ta.uiAmountString);
+  const decimals = ta?.decimals ?? 6;
+  if (info.amount) return Number(info.amount) / 10 ** decimals;
+  if (ta?.amount) return Number(ta.amount) / 10 ** decimals;
+  return 0;
+}
+
 function detectBuyKindFromData(data: string | undefined): BuyKind | null {
   if (!data) return null;
   try {
@@ -172,16 +456,6 @@ function detectBuyKindFromData(data: string | undefined): BuyKind | null {
   } catch {
     return null;
   }
-  return null;
-}
-
-function detectBuyKind(logs: string[] | undefined): BuyKind | null {
-  if (!logs) return null;
-  const joined = logs.join("\n");
-  if (joined.includes("Instruction: BuyExactQuoteInV2")) return "buyExactQuoteInV2";
-  if (joined.includes("Instruction: BuyExactSolIn")) return "buyExactSolIn";
-  if (joined.includes("Instruction: BuyV2")) return "buyV2";
-  if (joined.includes("Instruction: Buy")) return "buy";
   return null;
 }
 
@@ -199,6 +473,33 @@ function readSpendableFromIxData(data: string | undefined, buyKind: BuyKind): nu
   if (buyKind === "buyExactSolIn" || buyKind === "buyExactQuoteInV2") {
     return Number(bytes.readBigUInt64LE(8));
   }
+  return null;
+}
+
+/** Non-buy pump instruction seen before the launch buy (e.g. CreateFeeSharingConfig). */
+export function detectSkippedTxPurpose(tx: RpcTransaction): string | null {
+  const logs = tx.meta?.logMessages ?? [];
+  const seen = new Set<string>();
+
+  for (const line of logs) {
+    const match = line.match(/Instruction: (\w+)/);
+    if (!match) continue;
+    const name = match[1]!;
+    if (
+      name === "Buy" ||
+      name === "BuyV2" ||
+      name === "BuyExactSolIn" ||
+      name === "BuyExactQuoteInV2" ||
+      name === "CreateV2"
+    ) {
+      continue;
+    }
+    if (!seen.has(name)) {
+      seen.add(name);
+      return name;
+    }
+  }
+
   return null;
 }
 
@@ -241,6 +542,26 @@ function findBuyContext(tx: RpcTransaction): BuyContext | null {
   return null;
 }
 
+function buyLegHasUsdcTransfers(tx: RpcTransaction, ctx: BuyContext): boolean {
+  if (!tx.meta?.innerInstructions) return false;
+
+  const innerGroup = tx.meta.innerInstructions.find((g) => g.index === ctx.ixIndex);
+  if (!innerGroup) return false;
+
+  for (const ix of innerGroup.instructions) {
+    const p = ix.parsed;
+    if (
+      p?.type === "transferChecked" &&
+      p.info?.mint === USDC_MINT &&
+      payerMatches(p.info, ctx.user)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function findProtocolDestinations(amounts: number[]): Set<number> {
   const protocol = new Set<number>();
   const sorted = [...amounts].sort((a, b) => a - b);
@@ -257,7 +578,7 @@ function findProtocolDestinations(amounts: number[]): Set<number> {
   return protocol;
 }
 
-function parseAmountsFromBuyInner(
+function parseAmountsFromBuyInnerSol(
   tx: RpcTransaction,
   ctx: BuyContext
 ): { swapLamports: number; creatorFeeLamports: number; bondingLamports: number; protocolLamports: number } | null {
@@ -271,16 +592,16 @@ function parseAmountsFromBuyInner(
 
   for (const ix of innerGroup.instructions) {
     const p = ix.parsed;
-    if (!p?.info?.source || p.info.source !== ctx.user) continue;
+    if (!payerMatches(p?.info, ctx.user)) continue;
 
-    if (p.type === "transfer" && p.info.destination) {
+    if (p?.type === "transfer" && p.info?.destination) {
       payerTransfers.push({
         destination: p.info.destination,
         lamports: Number(p.info.lamports ?? 0),
       });
     }
 
-    if (p.type === "createAccount" && p.info.newAccount === ctx.userVolumeAccumulator) {
+    if (p?.type === "createAccount" && p.info?.newAccount === ctx.userVolumeAccumulator) {
       uvaCreateLamports = Number(p.info.lamports ?? 0);
     }
   }
@@ -335,10 +656,59 @@ function parseAmountsFromBuyInner(
   return { swapLamports, creatorFeeLamports, bondingLamports, protocolLamports };
 }
 
-export function parseFirstBuyFromTx(tx: RpcTransaction): {
-  firstSwapSol: number;
-  firstBuyCreatorFeeSol: number;
-} | null {
+function parseAmountsFromBuyInnerUsdc(
+  tx: RpcTransaction,
+  ctx: BuyContext
+): { swapUsdc: number; creatorFeeUsdc: number } | null {
+  if (!tx.meta?.innerInstructions) return null;
+
+  const innerGroup = tx.meta.innerInstructions.find((g) => g.index === ctx.ixIndex);
+  if (!innerGroup) return null;
+
+  const payerTransfers: Array<{ destination: string; amount: number }> = [];
+
+  for (const ix of innerGroup.instructions) {
+    const p = ix.parsed;
+    if (!payerMatches(p?.info, ctx.user)) continue;
+
+    if (p?.type === "transferChecked" && p.info?.mint === USDC_MINT && p.info.destination) {
+      payerTransfers.push({
+        destination: p.info.destination,
+        amount: tokenAmountToNumber(p.info),
+      });
+    }
+  }
+
+  if (payerTransfers.length === 0) return null;
+
+  const vaultTransfers = payerTransfers
+    .filter((t) => t.destination === ctx.creatorVault)
+    .map((t) => t.amount);
+
+  const protocolMicro = findProtocolDestinations(
+    payerTransfers.map((t) => Math.round(t.amount * 1_000_000))
+  );
+
+  const nonProtocol = payerTransfers.filter(
+    (t) => !protocolMicro.has(Math.round(t.amount * 1_000_000))
+  );
+
+  let creatorFeeUsdc = 0;
+  if (vaultTransfers.length >= 1) {
+    creatorFeeUsdc = Math.min(...vaultTransfers);
+  } else if (nonProtocol.length >= 2) {
+    // Smallest non-protocol USDC leg is typically the creator fee (~0.3% of swap)
+    creatorFeeUsdc = Math.min(...nonProtocol.map((t) => t.amount));
+  }
+
+  const swapUsdc = payerTransfers.reduce((sum, t) => sum + t.amount, 0);
+
+  if (swapUsdc <= 0) return null;
+
+  return { swapUsdc, creatorFeeUsdc };
+}
+
+export function parseFirstBuyFromTx(tx: RpcTransaction): ParsedBuyAmounts | null {
   if (!tx.meta || tx.meta.err) return null;
 
   const ctx = findBuyContext(tx);
@@ -346,39 +716,93 @@ export function parseFirstBuyFromTx(tx: RpcTransaction): {
 
   const keys = resolveAccountKeys(tx);
   const topIxs = tx.transaction.message.instructions;
+  const isUsdcQuote = buyLegHasUsdcTransfers(tx, ctx);
 
-  // Exact-budget buys: spendable_sol_in / spendable_quote_in from instruction data
-  if (ctx.kind === "buyExactSolIn" || ctx.kind === "buyExactQuoteInV2") {
+  if (isUsdcQuote) {
+    if (ctx.kind === "buyExactQuoteInV2") {
+      for (const ix of topIxs) {
+        if (programId(ix.programId, keys) !== PUMP_PROGRAM_ID) continue;
+        const spendableMicro = readSpendableFromIxData(ix.data, ctx.kind);
+        if (spendableMicro === null || spendableMicro <= 0) continue;
+
+        const amounts = parseAmountsFromBuyInnerUsdc(tx, ctx);
+        if (!amounts) continue;
+
+        return {
+          firstSwapAmount: amounts.swapUsdc,
+          firstSwapUnit: "USDC",
+          firstBuyCreatorFeeAmount: amounts.creatorFeeUsdc,
+          firstBuyCreatorFeeUnit: "USDC",
+        };
+      }
+    }
+
+    const usdcAmounts = parseAmountsFromBuyInnerUsdc(tx, ctx);
+    if (!usdcAmounts) return null;
+
+    return {
+      firstSwapAmount: usdcAmounts.swapUsdc,
+      firstSwapUnit: "USDC",
+      firstBuyCreatorFeeAmount: usdcAmounts.creatorFeeUsdc,
+      firstBuyCreatorFeeUnit: "USDC",
+    };
+  }
+
+  if (ctx.kind === "buyExactQuoteInV2" || ctx.kind === "buyExactSolIn") {
     for (const ix of topIxs) {
       if (programId(ix.programId, keys) !== PUMP_PROGRAM_ID) continue;
       const spendable = readSpendableFromIxData(ix.data, ctx.kind);
       if (spendable === null || spendable <= 0) continue;
 
-      const amounts = parseAmountsFromBuyInner(tx, ctx);
+      const amounts = parseAmountsFromBuyInnerSol(tx, ctx);
       const creatorFeeLamports =
         amounts && amounts.bondingLamports + amounts.protocolLamports < spendable
           ? spendable - amounts.bondingLamports - amounts.protocolLamports
           : (amounts?.creatorFeeLamports ?? 0);
 
       return {
-        firstSwapSol: lamportsToSol(spendable),
-        firstBuyCreatorFeeSol: lamportsToSol(creatorFeeLamports),
+        firstSwapAmount: lamportsToSol(spendable),
+        firstSwapUnit: "SOL",
+        firstBuyCreatorFeeAmount: lamportsToSol(creatorFeeLamports),
+        firstBuyCreatorFeeUnit: "SOL",
       };
     }
   }
 
-  const amounts = parseAmountsFromBuyInner(tx, ctx);
+  const amounts = parseAmountsFromBuyInnerSol(tx, ctx);
   if (!amounts) return null;
 
   return {
-    firstSwapSol: lamportsToSol(amounts.swapLamports),
-    firstBuyCreatorFeeSol: lamportsToSol(amounts.creatorFeeLamports),
+    firstSwapAmount: lamportsToSol(amounts.swapLamports),
+    firstSwapUnit: "SOL",
+    firstBuyCreatorFeeAmount: lamportsToSol(amounts.creatorFeeLamports),
+    firstBuyCreatorFeeUnit: "SOL",
   };
 }
 
-async function rpcCall<T>(method: string, params: unknown[]): Promise<T | null> {
+function buildFirstBuyInfo(
+  signature: string,
+  parsed: ParsedBuyAmounts,
+  launchNote?: string
+): FirstBuyInfo {
+  return {
+    firstTxSignature: signature,
+    firstSwapAmount: parsed.firstSwapAmount,
+    firstSwapUnit: parsed.firstSwapUnit,
+    firstBuyCreatorFeeAmount: parsed.firstBuyCreatorFeeAmount,
+    firstBuyCreatorFeeUnit: parsed.firstBuyCreatorFeeUnit,
+    launchNote,
+    firstSwapSol: parsed.firstSwapUnit === "SOL" ? parsed.firstSwapAmount : 0,
+    firstBuyCreatorFeeSol: parsed.firstBuyCreatorFeeUnit === "SOL" ? parsed.firstBuyCreatorFeeAmount : 0,
+  };
+}
+
+async function rpcCallWithError<T>(
+  method: string,
+  params: unknown[]
+): Promise<{ result: T | null; error: { code: number; message: string } | null }> {
   const rpcUrl = getRpcUrl();
-  if (!rpcUrl) return null;
+  if (!rpcUrl) return { result: null, error: null };
 
   const response = await fetch(rpcUrl, {
     method: "POST",
@@ -386,105 +810,131 @@ async function rpcCall<T>(method: string, params: unknown[]): Promise<T | null> 
     body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
   });
 
-  if (!response.ok) return null;
-  const data = (await response.json()) as { result?: T; error?: unknown };
-  if (data.error || data.result === undefined) return null;
-  return data.result;
-}
+  if (!response.ok) return { result: null, error: null };
 
-async function getSignaturesOldestFirst(address: string): Promise<string[]> {
-  const collected: string[] = [];
-  let before: string | undefined;
+  const data = (await response.json()) as {
+    result?: T;
+    error?: { code: number; message: string };
+  };
 
-  while (true) {
-    const page = await rpcCall<Array<{ signature: string }>>(
-      "getSignaturesForAddress",
-      [address, { before, limit: 1000 }]
-    );
-    if (!page || page.length === 0) break;
-    collected.push(...page.map((e) => e.signature));
-    before = page[page.length - 1]!.signature;
-    if (page.length < 1000) break;
+  if (data.error) {
+    return { result: null, error: data.error };
   }
 
-  return collected.reverse();
+  return { result: data.result ?? null, error: null };
 }
 
-async function fetchRpcTx(signature: string): Promise<RpcTransaction | null> {
-  return rpcCall<RpcTransaction>("getTransaction", [
-    signature,
-    { encoding: "jsonParsed", maxSupportedTransactionVersion: 0 },
+interface GtfaTxItem {
+  slot: number;
+  transactionIndex: number;
+  blockTime: number | null;
+  signature?: string;
+  transaction: RpcTransaction["transaction"] & { signatures?: string[] };
+  meta: RpcTransaction["meta"];
+}
+
+interface GtfaResult {
+  data: GtfaTxItem[];
+  paginationToken: string | null;
+}
+
+async function fetchOldestTransactionsViaGtfa(
+  address: string,
+  limit: number = GTFA_TX_LIMIT
+): Promise<{
+  txs: Array<{ tx: RpcTransaction; signature: string }>;
+  error: string | null;
+}> {
+  const { result, error } = await rpcCallWithError<GtfaResult>("getTransactionsForAddress", [
+    address,
+    {
+      sortOrder: "asc",
+      limit,
+      transactionDetails: "full",
+      encoding: "jsonParsed",
+      commitment: "confirmed",
+    },
   ]);
+
+  if (error) {
+    return { txs: [], error: error.message };
+  }
+
+  if (!result?.data.length) {
+    return { txs: [], error: null };
+  }
+
+  const txs = result.data
+    .map((item) => {
+      const signature = item.signature ?? item.transaction?.signatures?.[0] ?? "";
+      if (!signature) return null;
+      return {
+        tx: { transaction: item.transaction, meta: item.meta } satisfies RpcTransaction,
+        signature,
+      };
+    })
+    .filter((item): item is { tx: RpcTransaction; signature: string } => item !== null);
+
+  return { txs, error: null };
 }
 
-function txHasCreateV2(tx: RpcTransaction): boolean {
-  const keys = resolveAccountKeys(tx);
-  for (const ix of tx.transaction.message.instructions) {
-    if (programId(ix.programId, keys) !== PUMP_PROGRAM_ID || !ix.data) continue;
-    try {
-      if (decodeBase58(ix.data).subarray(0, 8).toString("hex") === CREATE_V2_IX) return true;
-    } catch {
+interface PickedLaunch {
+  info: FirstBuyInfo;
+  launchBuyIndex: number;
+}
+
+function pickLaunchFromOldestTxs(
+  txs: Array<{ tx: RpcTransaction; signature: string }>
+): PickedLaunch | null {
+  const skippedNotes: string[] = [];
+
+  for (let i = 0; i < txs.length; i++) {
+    const { tx, signature } = txs[i]!;
+    const parsed = parseFirstBuyFromTx(tx);
+
+    if (!parsed) {
+      const purpose = detectSkippedTxPurpose(tx);
+      if (purpose) {
+        skippedNotes.push(`Oldest tx #${i + 1} was ${purpose} (not the launch buy)`);
+      }
       continue;
     }
+
+    const launchNote =
+      skippedNotes.length > 0 ? skippedNotes.join("; ") : undefined;
+
+    return { info: buildFirstBuyInfo(signature, parsed, launchNote), launchBuyIndex: i };
   }
-  return false;
-}
 
-async function tryParseLaunchTx(signature: string): Promise<(FirstBuyInfo & { isLaunchTx: boolean }) | null> {
-  const tx = await fetchRpcTx(signature);
-  if (!tx) return null;
-
-  const parsed = parseFirstBuyFromTx(tx);
-  if (!parsed) return null;
-
-  return {
-    firstTxSignature: signature,
-    firstSwapSol: parsed.firstSwapSol,
-    firstBuyCreatorFeeSol: parsed.firstBuyCreatorFeeSol,
-    isLaunchTx: txHasCreateV2(tx),
-  };
+  return null;
 }
 
 export async function fetchFirstBuyInfo(mintAddress: string): Promise<FirstBuyInfo | null> {
   if (!getRpcUrl()) return null;
 
-  const bondingCurve = bondingCurvePda(mintAddress);
-
-  let signatures: string[];
-  try {
-    signatures = await getSignaturesOldestFirst(bondingCurve);
-  } catch {
-    signatures = [];
+  const { txs: mintTxs, error: mintError } = await fetchOldestTransactionsViaGtfa(mintAddress);
+  if (mintError) {
+    console.error(`    ⚠ gTFA error: ${mintError}`);
+    return null;
   }
 
-  if (signatures.length === 0) {
-    try {
-      signatures = await getSignaturesOldestFirst(mintAddress);
-    } catch {
+  let picked = pickLaunchFromOldestTxs(mintTxs);
+
+  if (!picked) {
+    const { txs: bcTxs, error: bcError } = await fetchOldestTransactionsViaGtfa(
+      bondingCurvePda(mintAddress)
+    );
+    if (bcError) {
+      console.error(`    ⚠ gTFA error: ${bcError}`);
       return null;
     }
+    picked = pickLaunchFromOldestTxs(bcTxs);
   }
 
-  if (signatures.length === 0) return null;
+  if (!picked) return null;
 
-  const candidates: Array<FirstBuyInfo & { isLaunchTx: boolean }> = [];
-
-  for (const signature of signatures.slice(0, 8)) {
-    const info = await tryParseLaunchTx(signature);
-    if (info) candidates.push(info);
-    await new Promise((r) => setTimeout(r, HELIUS_RPC_DELAY_MS));
-  }
-
-  if (candidates.length === 0) return null;
-
-  const launch = candidates.find((c) => c.isLaunchTx);
-  if (launch) {
-    const { isLaunchTx: _, ...info } = launch;
-    return info;
-  }
-
-  const { isLaunchTx: _, ...info } = candidates[0]!;
-  return info;
+  const feeSharing = await buildFeeSharingFields(mintAddress, mintTxs, picked.launchBuyIndex);
+  return { ...picked.info, ...feeSharing };
 }
 
 export const parseBuyExactSolInFromTx = parseFirstBuyFromTx;

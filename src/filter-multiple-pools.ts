@@ -253,6 +253,10 @@ async function exportApprovedTokensToCSV(
     "First Boost vs Migration Time (ms)",
     "First Swap SOL Amount",
     "First Buy Creator Fee (SOL)",
+    "Launch Note",
+    "Has Fee Sharing",
+    "Launch Fee Shareholders",
+    "Fee Shareholders",
   ];
 
   // Build CSV rows
@@ -314,8 +318,12 @@ async function exportApprovedTokensToCSV(
         : "",
       escapeCSV(token.boost?.firstBoostVsMigration?.time || ""),
       escapeCSV(token.boost?.firstBoostVsMigration?.timeMs?.toString() || ""),
-      escapeCSV(token.launch?.firstSwapSol?.toString() || ""),
-      escapeCSV(token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
+      escapeCSV(token.launch?.firstSwapDisplay || token.launch?.firstSwapSol?.toString() || ""),
+      escapeCSV(token.launch?.firstBuyCreatorFeeDisplay || token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
+      escapeCSV(token.launch?.launchNote || ""),
+      token.launch?.hasFeeSharingConfig ? "Yes" : token.launch?.hasFeeSharingConfig === false ? "No" : "",
+      escapeCSV(token.launch?.launchFeeShareholders || ""),
+      escapeCSV(token.launch?.feeShareholders || ""),
     ];
     rows.push(row.join(","));
   });

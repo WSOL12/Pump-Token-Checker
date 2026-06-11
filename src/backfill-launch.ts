@@ -2,7 +2,7 @@ import { access, readFile, rename, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import "dotenv/config";
 import { exportAllTokensToCSV } from "./approved-csv.js";
-import { fetchFirstBuyInfo, HELIUS_RPC_DELAY_MS } from "./launch-tx.js";
+import { fetchFirstBuyInfo, HELIUS_RPC_DELAY_MS, formatFirstSwapDisplay, formatCreatorFeeDisplay } from "./launch-tx.js";
 import { ALL_TOKENS_CSV, ensureDataDir } from "./paths.js";
 
 const SAVE_EVERY = 25;
@@ -11,6 +11,10 @@ const SAVE_RETRIES = 5;
 const COL_TOKEN = "Token Address";
 const COL_SWAP = "First Swap SOL Amount";
 const COL_FEE = "First Buy Creator Fee (SOL)";
+const COL_LAUNCH_NOTE = "Launch Note";
+const COL_HAS_FEE_SHARING = "Has Fee Sharing";
+const COL_LAUNCH_FEE_SHAREHOLDERS = "Launch Fee Shareholders";
+const COL_FEE_SHAREHOLDERS = "Fee Shareholders";
 
 function escapeCSV(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -145,6 +149,27 @@ async function main() {
   const tokenCol = headers.indexOf(COL_TOKEN);
   const swapCol = headers.indexOf(COL_SWAP);
   const feeCol = headers.indexOf(COL_FEE);
+  let noteCol = headers.indexOf(COL_LAUNCH_NOTE);
+  let hasFeeSharingCol = headers.indexOf(COL_HAS_FEE_SHARING);
+  let launchFeeShareholdersCol = headers.indexOf(COL_LAUNCH_FEE_SHAREHOLDERS);
+  let feeShareholdersCol = headers.indexOf(COL_FEE_SHAREHOLDERS);
+
+  const newColumns: Array<{ name: string; getIndex: () => number; setIndex: (i: number) => void }> = [
+    { name: COL_LAUNCH_NOTE, getIndex: () => noteCol, setIndex: (i) => { noteCol = i; } },
+    { name: COL_HAS_FEE_SHARING, getIndex: () => hasFeeSharingCol, setIndex: (i) => { hasFeeSharingCol = i; } },
+    { name: COL_LAUNCH_FEE_SHAREHOLDERS, getIndex: () => launchFeeShareholdersCol, setIndex: (i) => { launchFeeShareholdersCol = i; } },
+    { name: COL_FEE_SHAREHOLDERS, getIndex: () => feeShareholdersCol, setIndex: (i) => { feeShareholdersCol = i; } },
+  ];
+
+  for (const col of newColumns) {
+    if (col.getIndex() === -1) {
+      headers.push(col.name);
+      col.setIndex(headers.length - 1);
+      for (const row of rows) {
+        row.push("");
+      }
+    }
+  }
 
   if (tokenCol === -1 || swapCol === -1 || feeCol === -1) {
     console.error(
@@ -194,15 +219,27 @@ async function main() {
     }
 
     if (launchInfo) {
-      row[swapCol] = String(launchInfo.firstSwapSol);
-      row[feeCol] = String(launchInfo.firstBuyCreatorFeeSol);
+      row[swapCol] = formatFirstSwapDisplay(launchInfo);
+      row[feeCol] = formatCreatorFeeDisplay(launchInfo);
+      row[noteCol] = launchInfo.launchNote ?? "";
+      row[hasFeeSharingCol] = launchInfo.hasFeeSharingConfig ? "Yes" : "No";
+      row[launchFeeShareholdersCol] = launchInfo.launchFeeShareholders ?? "";
+      row[feeShareholdersCol] = launchInfo.feeShareholders ?? "";
       found++;
+      const noteSuffix = launchInfo.launchNote ? ` | ${launchInfo.launchNote}` : "";
+      const feeSuffix = launchInfo.feeShareholders
+        ? ` | feeShares=${launchInfo.feeShareholders}`
+        : "";
       console.log(
-        `    ✓ firstSwapSol=${launchInfo.firstSwapSol}, creatorFee=${launchInfo.firstBuyCreatorFeeSol}`
+        `    ✓ swap=${formatFirstSwapDisplay(launchInfo)}, fee=${formatCreatorFeeDisplay(launchInfo)}${noteSuffix}${feeSuffix}`
       );
     } else {
       row[swapCol] = "";
       row[feeCol] = "";
+      row[noteCol] = "";
+      row[hasFeeSharingCol] = "";
+      row[launchFeeShareholdersCol] = "";
+      row[feeShareholdersCol] = "";
       notFound++;
       console.log("    ✗ no launch buy found");
     }
