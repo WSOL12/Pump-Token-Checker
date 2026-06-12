@@ -1,11 +1,12 @@
 import { writeFile, readFile } from "fs/promises";
 import "dotenv/config";
 import {
-  APPROVED_TOKENS_CSV,
-  APPROVED_TOKENS_JSON,
+  ALL_TOKENS_CSV,
+  ALL_TOKENS_JSON,
   TOKENS_WITH_MULTIPLE_POOLS_JSON,
   ensureDataDir,
 } from "./paths.js";
+import { exportTokensJsonToCSV } from "./tokens-csv.js";
 
 interface PoolResult {
   tokenAddress: string;
@@ -168,14 +169,14 @@ async function fetchPoolCountBatch(tokenAddresses: string[]): Promise<Map<string
  * Read approved tokens JSON file (input)
  */
 async function loadApprovedTokensJson(
-  filename: string = APPROVED_TOKENS_JSON
+  filename: string = ALL_TOKENS_JSON
 ): Promise<{ checkedAt?: string; totalApproved?: number; highlightedCount?: number; tokens: any[] }> {
   try {
     const content = await readFile(filename, "utf-8");
     const data = JSON.parse(content);
 
     if (!data || !Array.isArray(data.tokens)) {
-      throw new Error(`${APPROVED_TOKENS_JSON} is missing \`tokens\` array`);
+      throw new Error(`${ALL_TOKENS_JSON} is missing \`tokens\` array`);
     }
 
     return data;
@@ -186,164 +187,16 @@ async function loadApprovedTokensJson(
 }
 
 /**
- * Export results to CSV
- */
-async function exportApprovedTokensToCSV(
-  approvedJson: { tokens: any[] },
-  csvFilename: string = APPROVED_TOKENS_CSV
-): Promise<void> {
-  // Helper function to escape CSV values
-  const escapeCSV = (value: any): string => {
-    if (value === null || value === undefined) return "";
-    const str = String(value);
-    // If contains comma, quote, or newline, wrap in quotes and escape quotes
-    if (str.includes(",") || str.includes('"') || str.includes("\n")) {
-      return `"${str.replace(/"/g, '""')}"`;
-    }
-    return str;
-  };
-
-  // CSV Headers
-  const headers = [
-    "Index",
-    "Token Address",
-    "GMGN URL",
-    "Pool Count",
-    "Twitter URL",
-    "Website URL",
-    "Website Hosting IP Address",
-    "It is hosted by",
-    "Registrar",
-    "Phone",
-    "Mailing Address",
-    "Registrar Contact Phone",
-    "Registrar Contact Email",
-    "Registered On",
-    "Expires On",
-    "Updated On",
-    "Organic Score",
-    "Organic Score Label",
-    "Highlighted",
-    "Created Date",
-    "Graduated Date",
-    "Creation to Migration Time",
-    "Creation to Migration Time (ms)",
-    "TokenProfile Approved Before Migration",
-    "TokenProfile vs Migration Time",
-    "TokenProfile vs Migration Time (ms)",
-    "Has TokenAd",
-    "TokenAd Count",
-    "TokenAd Payment Date",
-    "TokenAd Approved Before Migration",
-    "TokenAd vs Migration Time",
-    "TokenAd vs Migration Time (ms)",
-    "Has CommunityTakeover",
-    "CommunityTakeover Count",
-    "CommunityTakeover Payment Date",
-    "CommunityTakeover Approved Before Migration",
-    "CommunityTakeover vs Migration Time",
-    "CommunityTakeover vs Migration Time (ms)",
-    "Has Boosts",
-    "Boost Count",
-    "Total Boost Amount",
-    "First Boost Amount",
-    "First Boost Date",
-    "First Boost Before Migration",
-    "First Boost vs Migration Time",
-    "First Boost vs Migration Time (ms)",
-    "First Swap SOL Amount",
-    "First Buy Creator Fee (SOL)",
-    "Launch Note",
-    "Has Fee Sharing",
-    "Launch Fee Shareholders",
-    "Fee Shareholders",
-  ];
-
-  // Build CSV rows
-  const rows: string[] = [headers.map(h => escapeCSV(h)).join(",")];
-  
-  approvedJson.tokens.forEach((token: any, index: number) => {
-    const row = [
-      (index + 1).toString(),
-      escapeCSV(token.tokenAddress || ""),
-      escapeCSV(token.gmgnUrl || ""),
-      escapeCSV(token.poolCount?.toString() || ""),
-      escapeCSV(token.migration?.twitter || ""),
-      escapeCSV(token.migration?.website || ""),
-      escapeCSV(token.migration?.websiteDetails?.hostingIp || ""),
-      escapeCSV(token.migration?.websiteDetails?.hostedBy || ""),
-      escapeCSV(token.migration?.websiteDetails?.registrar || ""),
-      escapeCSV(token.migration?.websiteDetails?.phone || ""),
-      escapeCSV(token.migration?.websiteDetails?.mailingAddress || ""),
-      escapeCSV(token.migration?.websiteDetails?.registrarContactPhone || ""),
-      escapeCSV(token.migration?.websiteDetails?.registrarContactEmail || ""),
-      escapeCSV(token.migration?.websiteDetails?.registeredOn || ""),
-      escapeCSV(token.migration?.websiteDetails?.expiresOn || ""),
-      escapeCSV(token.migration?.websiteDetails?.updatedOn || ""),
-      escapeCSV(token.migration?.organicScore?.toString() || ""),
-      escapeCSV(token.migration?.organicScoreLabel || ""),
-      token.highlighted ? "Yes" : "No",
-      escapeCSV(token.migration?.createdAt || ""),
-      escapeCSV(token.migration?.graduatedAt || ""),
-      escapeCSV(token.migration?.creationToMigration || ""),
-      escapeCSV(token.migration?.creationToMigrationMs?.toString() || ""),
-      (token.migration && token.migration.isApprovedBeforeMigration !== null)
-        ? (token.migration.isApprovedBeforeMigration ? "Yes" : "No")
-        : "",
-      escapeCSV(token.migration?.approvedVsMigration || ""),
-      escapeCSV(token.migration?.approvedVsMigrationMs?.toString() || ""),
-      token.tokenAd?.hasTokenAd ? "Yes" : "No",
-      escapeCSV(token.tokenAd?.adCount?.toString() || "0"),
-      escapeCSV(token.tokenAd?.paymentDate || ""),
-      (token.tokenAd && token.tokenAd.isApprovedBeforeMigration !== null)
-        ? (token.tokenAd.isApprovedBeforeMigration ? "Yes" : "No")
-        : "",
-      escapeCSV(token.tokenAd?.approvedVsMigration || ""),
-      escapeCSV(token.tokenAd?.approvedVsMigrationMs?.toString() || ""),
-      token.communityTakeover?.hasCommunityTakeover ? "Yes" : "No",
-      escapeCSV(token.communityTakeover?.takeoverCount?.toString() || "0"),
-      escapeCSV(token.communityTakeover?.paymentDate || ""),
-      (token.communityTakeover && token.communityTakeover.isApprovedBeforeMigration !== null)
-        ? (token.communityTakeover.isApprovedBeforeMigration ? "Yes" : "No")
-        : "",
-      escapeCSV(token.communityTakeover?.approvedVsMigration || ""),
-      escapeCSV(token.communityTakeover?.approvedVsMigrationMs?.toString() || ""),
-      token.boost?.hasBoosts ? "Yes" : "No",
-      escapeCSV(token.boost?.count?.toString() || "0"),
-      escapeCSV(token.boost?.totalAmount?.toString() || "0"),
-      escapeCSV(token.boost?.firstBoost?.amount?.toString() || ""),
-      escapeCSV(token.boost?.firstBoost?.date || ""),
-      (token.boost?.firstBoostVsMigration && token.boost.firstBoostVsMigration.isBeforeMigration !== null)
-        ? (token.boost.firstBoostVsMigration.isBeforeMigration ? "Yes" : "No")
-        : "",
-      escapeCSV(token.boost?.firstBoostVsMigration?.time || ""),
-      escapeCSV(token.boost?.firstBoostVsMigration?.timeMs?.toString() || ""),
-      escapeCSV(token.launch?.firstSwapDisplay || token.launch?.firstSwapSol?.toString() || ""),
-      escapeCSV(token.launch?.firstBuyCreatorFeeDisplay || token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
-      escapeCSV(token.launch?.launchNote || ""),
-      token.launch?.hasFeeSharingConfig ? "Yes" : token.launch?.hasFeeSharingConfig === false ? "No" : "",
-      escapeCSV(token.launch?.launchFeeShareholders || ""),
-      escapeCSV(token.launch?.feeShareholders || ""),
-    ];
-    rows.push(row.join(","));
-  });
-
-  const csvContent = rows.join("\n");
-  await writeFile(csvFilename, csvContent, "utf-8");
-  console.log(`✓ CSV exported to ${csvFilename}`);
-}
-
-/**
  * Main function
  */
 async function main() {
   await ensureDataDir();
 
-  console.log(`🔍 Adding pool counts to ${APPROVED_TOKENS_JSON} and regenerating ${APPROVED_TOKENS_CSV}...\n`);
+  console.log(`🔍 Adding pool counts to ${ALL_TOKENS_JSON} and regenerating ${ALL_TOKENS_CSV}...\n`);
 
   const approvedJson = await loadApprovedTokensJson();
   if (!approvedJson.tokens || approvedJson.tokens.length === 0) {
-    console.log(`❌ No tokens found in ${APPROVED_TOKENS_JSON}`);
+    console.log(`❌ No tokens found in ${ALL_TOKENS_JSON}`);
     return;
   }
 
@@ -351,7 +204,7 @@ async function main() {
     .map((t: any) => String(t.tokenAddress || "").trim())
     .filter((t: string) => t.length > 0);
 
-  console.log(`✓ Loaded ${tokenAddresses.length} token(s) from ${APPROVED_TOKENS_JSON}\n`);
+  console.log(`✓ Loaded ${tokenAddresses.length} token(s) from ${ALL_TOKENS_JSON}\n`);
 
   console.log(`📊 Checking pool counts for ${tokenAddresses.length} token(s)...\n`);
 
@@ -365,10 +218,10 @@ async function main() {
     token.poolCount = poolCount;
   }
 
-  await writeFile(APPROVED_TOKENS_JSON, JSON.stringify(approvedJson, null, 2), "utf-8");
-  console.log(`✓ Updated ${APPROVED_TOKENS_JSON} (added poolCount)`);
+  await writeFile(ALL_TOKENS_JSON, JSON.stringify(approvedJson, null, 2), "utf-8");
+  console.log(`✓ Updated ${ALL_TOKENS_JSON} (added poolCount)`);
 
-  await exportApprovedTokensToCSV(approvedJson, APPROVED_TOKENS_CSV);
+  await exportTokensJsonToCSV(approvedJson, ALL_TOKENS_CSV);
 
   // Also write a small helper file for “multiple pools” filtering
   const multiplePoolsOnly = approvedJson.tokens

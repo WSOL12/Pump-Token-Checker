@@ -1,11 +1,5 @@
 import { readFile, writeFile } from "fs/promises";
-import {
-  ALL_TOKENS_CSV,
-  APPROVED_TOKENS_CSV,
-  APPROVED_TOKENS_JSON,
-  UNAPPROVED_TOKENS_CSV,
-  UNAPPROVED_TOKENS_JSON,
-} from "./paths.js";
+import { ALL_TOKENS_CSV, ALL_TOKENS_JSON } from "./paths.js";
 
 function escapeCSV(value: unknown): string {
   if (value === null || value === undefined) return "";
@@ -16,8 +10,9 @@ function escapeCSV(value: unknown): string {
   return str;
 }
 
-const APPROVED_HEADERS = [
+export const TOKEN_CSV_HEADERS = [
   "Index",
+  "Has TokenProfile",
   "Token Address",
   "GMGN URL",
   "Twitter URL",
@@ -71,30 +66,10 @@ const APPROVED_HEADERS = [
   "Fee Shareholders",
 ];
 
-const UNAPPROVED_HEADERS = [
-  "Index",
-  "Token Address",
-  "GMGN URL",
-  "Error",
-  "First Tx Signature",
-  "First Swap SOL Amount",
-  "First Buy Creator Fee (SOL)",
-  "Launch Note",
-  "Has Fee Sharing",
-  "Launch Fee Shareholders",
-  "Fee Shareholders",
-];
-
-const ALL_TOKENS_HEADERS = [
-  "Index",
-  "Has TokenProfile",
-  "Error",
-  ...APPROVED_HEADERS.slice(1),
-];
-
-function buildApprovedTokenRow(token: any, index: number): string[] {
+export function buildTokenRow(token: any, index: number): string[] {
   return [
     (index + 1).toString(),
+    token.hasTokenProfile ? "Yes" : "No",
     escapeCSV(token.tokenAddress || ""),
     escapeCSV(token.gmgnUrl || ""),
     escapeCSV(token.migration?.twitter || ""),
@@ -167,36 +142,6 @@ function buildApprovedTokenRow(token: any, index: number): string[] {
   ];
 }
 
-function buildUnapprovedTokenRow(token: any, index: number): string[] {
-  return [
-    (index + 1).toString(),
-    escapeCSV(token.tokenAddress || ""),
-    escapeCSV(token.gmgnUrl || ""),
-    escapeCSV(token.error || ""),
-    escapeCSV(token.launch?.firstTxSignature || ""),
-    escapeCSV(token.launch?.firstSwapDisplay || token.launch?.firstSwapSol?.toString() || ""),
-    escapeCSV(token.launch?.firstBuyCreatorFeeDisplay || token.launch?.firstBuyCreatorFeeSol?.toString() || ""),
-    escapeCSV(token.launch?.launchNote || ""),
-    token.launch?.hasFeeSharingConfig ? "Yes" : token.launch?.hasFeeSharingConfig === false ? "No" : "",
-    escapeCSV(token.launch?.launchFeeShareholders || ""),
-    escapeCSV(token.launch?.feeShareholders || ""),
-  ];
-}
-
-function buildAllTokensRow(
-  token: any,
-  index: number,
-  hasTokenProfile: boolean
-): string[] {
-  const approvedRow = buildApprovedTokenRow(token, index);
-  return [
-    approvedRow[0]!,
-    hasTokenProfile ? "Yes" : "No",
-    escapeCSV(token.error || ""),
-    ...approvedRow.slice(1),
-  ];
-}
-
 async function loadTokens(filename: string): Promise<any[]> {
   try {
     const content = await readFile(filename, "utf-8");
@@ -220,84 +165,30 @@ async function writeCsv(
   return rows.length;
 }
 
-/**
- * Export approved tokens to CSV format with serial index.
- */
-export async function exportApprovedTokensToCSV(
-  filename: string = APPROVED_TOKENS_JSON,
-  csvFilename: string = APPROVED_TOKENS_CSV
+/** Export an in-memory token list to CSV (e.g. after JSON is updated in place). */
+export async function exportTokensJsonToCSV(
+  data: { tokens: any[] },
+  csvFilename: string = ALL_TOKENS_CSV
 ): Promise<void> {
-  try {
-    const tokens = await loadTokens(filename);
-    if (tokens.length === 0) {
-      console.log(`No tokens found in ${filename}`);
-      return;
-    }
-
-    const rows = tokens.map((token, index) => buildApprovedTokenRow(token, index));
-    const count = await writeCsv(csvFilename, APPROVED_HEADERS, rows);
-    console.log(`✓ Exported ${count} approved token(s) to ${csvFilename}`);
-  } catch (error) {
-    console.error(`❌ Error exporting approved CSV: ${error}`);
-  }
+  const rows = data.tokens.map((token, index) => buildTokenRow(token, index));
+  const count = await writeCsv(csvFilename, TOKEN_CSV_HEADERS, rows);
+  console.log(`✓ Exported ${count} token(s) to ${csvFilename}`);
 }
 
-/**
- * Export unapproved tokens to CSV.
- */
-export async function exportUnapprovedTokensToCSV(
-  filename: string = UNAPPROVED_TOKENS_JSON,
-  csvFilename: string = UNAPPROVED_TOKENS_CSV
-): Promise<void> {
-  try {
-    const tokens = await loadTokens(filename);
-    if (tokens.length === 0) {
-      console.log(`No tokens found in ${filename}`);
-      return;
-    }
-
-    const rows = tokens.map((token, index) => buildUnapprovedTokenRow(token, index));
-    const count = await writeCsv(csvFilename, UNAPPROVED_HEADERS, rows);
-    console.log(`✓ Exported ${count} unapproved token(s) to ${csvFilename}`);
-  } catch (error) {
-    console.error(`❌ Error exporting unapproved CSV: ${error}`);
-  }
-}
-
-/**
- * Export all tokens (approved + unapproved) to a single CSV.
- */
+/** Export all tokens from JSON file to CSV. */
 export async function exportAllTokensToCSV(
+  jsonFilename: string = ALL_TOKENS_JSON,
   csvFilename: string = ALL_TOKENS_CSV
 ): Promise<void> {
   try {
-    const approved = await loadTokens(APPROVED_TOKENS_JSON);
-    const unapproved = await loadTokens(UNAPPROVED_TOKENS_JSON);
-    const allTokens = [
-      ...approved.map((token) => ({ token, hasTokenProfile: true })),
-      ...unapproved.map((token) => ({ token, hasTokenProfile: false })),
-    ];
-
-    if (allTokens.length === 0) {
-      console.log("No tokens found to export to all_tokens.csv");
+    const tokens = await loadTokens(jsonFilename);
+    if (tokens.length === 0) {
+      console.log(`No tokens found in ${jsonFilename}`);
       return;
     }
 
-    const rows = allTokens.map(({ token, hasTokenProfile }, index) =>
-      buildAllTokensRow(token, index, hasTokenProfile)
-    );
-    const count = await writeCsv(csvFilename, ALL_TOKENS_HEADERS, rows);
-    console.log(`✓ Exported ${count} total token(s) to ${csvFilename}`);
+    await exportTokensJsonToCSV({ tokens }, csvFilename);
   } catch (error) {
-    console.error(`❌ Error exporting all tokens CSV: ${error}`);
+    console.error(`❌ Error exporting CSV: ${error}`);
   }
-}
-
-/**
- * Export approved, unapproved, and combined CSV files.
- */
-export async function exportAllTokenCsvFiles(): Promise<void> {
-  await exportApprovedTokensToCSV();
-  await exportUnapprovedTokensToCSV();
-  await exportAllTokensToCSV();
 }

@@ -1,7 +1,7 @@
 import { access, readFile, rename, writeFile } from "fs/promises";
 import { dirname, join } from "path";
 import "dotenv/config";
-import { exportAllTokensToCSV } from "./approved-csv.js";
+import { exportAllTokensToCSV } from "./tokens-csv.js";
 import { fetchFirstBuyInfo, HELIUS_RPC_DELAY_MS, formatFirstSwapDisplay, formatCreatorFeeDisplay } from "./launch-tx.js";
 import { ALL_TOKENS_CSV, ensureDataDir } from "./paths.js";
 

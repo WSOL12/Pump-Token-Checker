@@ -1,7 +1,9 @@
 import { writeFile, readFile } from "fs/promises";
 import "dotenv/config";
+import { join } from "path";
 import {
-  APPROVED_TOKENS_JSON,
+  ALL_TOKENS_JSON,
+  DATA_DIR,
   UNAPPROVED_TOKENS_JSON,
   ensureDataDir,
 } from "./paths.js";
@@ -10,7 +12,7 @@ import {
   fetchWebsiteDetails,
   type WebsiteDetails,
 } from "./website-info.js";
-import { exportAllTokenCsvFiles } from "./approved-csv.js";
+import { exportAllTokensToCSV } from "./tokens-csv.js";
 import {
   fetchFirstBuyInfo,
   HELIUS_RPC_DELAY_MS,
@@ -286,151 +288,131 @@ async function checkTokenProfile(
     let tokenAdInfo: TokenCheckResult["tokenAdInfo"] = undefined;
     let communityTakeoverInfo: TokenCheckResult["communityTakeoverInfo"] = undefined;
 
-    // If token has approved tokenProfile, tokenAd, or communityTakeover, fetch graduation info and compare
-    const needsGraduationInfo = (tokenProfileOrder && tokenProfileOrder.paymentTimestamp) || 
-                                 (firstTokenAdOrder && firstTokenAdOrder.paymentTimestamp) ||
-                                 (firstCommunityTakeoverOrder && firstCommunityTakeoverOrder.paymentTimestamp);
-    
-    if (needsGraduationInfo) {
-      // Small delay to avoid rate limiting on Jupiter API
-      await new Promise((resolve) => setTimeout(resolve, 200));
-      const gradInfo = await fetchGraduationInfo(tokenAddress);
-      
-      if (gradInfo && gradInfo.graduatedAtTimestamp) {
-        // Process tokenProfile if it exists
-        if (tokenProfileOrder && tokenProfileOrder.paymentTimestamp) {
-          const paymentTimestamp = tokenProfileOrder.paymentTimestamp;
-          const timeDifferenceMs = paymentTimestamp - gradInfo.graduatedAtTimestamp;
-          const isApprovedBeforeMigration = timeDifferenceMs < 0;
-          
-          // Calculate time difference between creation and migration
-          let creationToMigrationTime: { timeDifferenceMs: number | null; timeDifferenceFormatted: string | null } | undefined;
-          if (gradInfo.createdAtTimestamp && gradInfo.graduatedAtTimestamp) {
-            const creationToMigrationMs = gradInfo.graduatedAtTimestamp - gradInfo.createdAtTimestamp;
-            creationToMigrationTime = {
-              timeDifferenceMs: creationToMigrationMs,
-              timeDifferenceFormatted: formatTimeDifference(creationToMigrationMs),
-            };
-          } else {
-            creationToMigrationTime = {
-              timeDifferenceMs: null,
-              timeDifferenceFormatted: null,
-            };
-          }
-          
-          graduationInfo = {
-            graduatedAt: gradInfo.graduatedAt,
-            graduatedAtTimestamp: gradInfo.graduatedAtTimestamp,
-            createdAt: gradInfo.createdAt,
-            createdAtTimestamp: gradInfo.createdAtTimestamp,
-            twitter: gradInfo.twitter,
-            telegram: gradInfo.telegram,
-            website: gradInfo.website,
-            organicScore: gradInfo.organicScore,
-            organicScoreLabel: gradInfo.organicScoreLabel,
-            isApprovedBeforeMigration,
-            timeDifferenceMs,
-            timeDifferenceFormatted: formatTimeDifference(timeDifferenceMs),
-            creationToMigrationTime,
-          };
+    // Always fetch Jupiter for every token (organic score, dates, socials)
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const gradInfo = await fetchGraduationInfo(tokenAddress);
 
-          // Compare first boost with migration if boosts exist
-          if (boostInfo.hasBoosts && boostInfo.firstBoost) {
-            const firstBoostTimeDiff = boostInfo.firstBoost.paymentTimestamp - gradInfo.graduatedAtTimestamp;
-            boostInfo.firstBoostVsMigration = {
-              isFirstBoostBeforeMigration: firstBoostTimeDiff < 0,
-              timeDifferenceMs: firstBoostTimeDiff,
-              timeDifferenceFormatted: formatTimeDifference(firstBoostTimeDiff),
-            };
-          }
-        } else {
-          // No tokenProfile but we fetched gradInfo, set basic info
-          graduationInfo = {
-            graduatedAt: gradInfo.graduatedAt,
-            graduatedAtTimestamp: gradInfo.graduatedAtTimestamp,
-            createdAt: gradInfo.createdAt,
-            createdAtTimestamp: gradInfo.createdAtTimestamp,
-            twitter: gradInfo.twitter,
-            telegram: gradInfo.telegram,
-            website: gradInfo.website,
-            organicScore: gradInfo.organicScore,
-            organicScoreLabel: gradInfo.organicScoreLabel,
-            isApprovedBeforeMigration: null,
-            timeDifferenceMs: null,
-            timeDifferenceFormatted: null,
-            creationToMigrationTime: {
-              timeDifferenceMs: null,
-              timeDifferenceFormatted: null,
-            },
-          };
-        }
-
-        // Process first tokenAd if it exists
-        if (firstTokenAdOrder && firstTokenAdOrder.paymentTimestamp) {
-          const tokenAdPaymentTimestamp = firstTokenAdOrder.paymentTimestamp;
-          const tokenAdTimeDifferenceMs = tokenAdPaymentTimestamp - gradInfo.graduatedAtTimestamp;
-          const tokenAdIsApprovedBeforeMigration = tokenAdTimeDifferenceMs < 0;
-          
-          tokenAdInfo = {
-            adCount: tokenAdOrders.length,
-            isApprovedBeforeMigration: tokenAdIsApprovedBeforeMigration,
-            timeDifferenceMs: tokenAdTimeDifferenceMs,
-            timeDifferenceFormatted: formatTimeDifference(tokenAdTimeDifferenceMs),
-          };
-        }
-
-        // Process first communityTakeover if it exists
-        if (firstCommunityTakeoverOrder && firstCommunityTakeoverOrder.paymentTimestamp) {
-          const communityTakeoverPaymentTimestamp = firstCommunityTakeoverOrder.paymentTimestamp;
-          const communityTakeoverTimeDifferenceMs = communityTakeoverPaymentTimestamp - gradInfo.graduatedAtTimestamp;
-          const communityTakeoverIsApprovedBeforeMigration = communityTakeoverTimeDifferenceMs < 0;
-          
-          communityTakeoverInfo = {
-            takeoverCount: communityTakeoverOrders.length,
-            isApprovedBeforeMigration: communityTakeoverIsApprovedBeforeMigration,
-            timeDifferenceMs: communityTakeoverTimeDifferenceMs,
-            timeDifferenceFormatted: formatTimeDifference(communityTakeoverTimeDifferenceMs),
-          };
-        }
+    if (gradInfo) {
+      let creationToMigrationTime: {
+        timeDifferenceMs: number | null;
+        timeDifferenceFormatted: string | null;
+      };
+      if (gradInfo.createdAtTimestamp && gradInfo.graduatedAtTimestamp) {
+        const creationToMigrationMs =
+          gradInfo.graduatedAtTimestamp - gradInfo.createdAtTimestamp;
+        creationToMigrationTime = {
+          timeDifferenceMs: creationToMigrationMs,
+          timeDifferenceFormatted: formatTimeDifference(creationToMigrationMs),
+        };
       } else {
-        // No graduation info available
-        if (tokenProfileOrder) {
-          graduationInfo = {
-            graduatedAt: null,
-            graduatedAtTimestamp: null,
-            createdAt: null,
-            createdAtTimestamp: null,
-            twitter: null,
-            telegram: null,
-            website: null,
-            organicScore: null,
-            organicScoreLabel: null,
-            isApprovedBeforeMigration: null,
-            timeDifferenceMs: null,
-            timeDifferenceFormatted: null,
-            creationToMigrationTime: {
-              timeDifferenceMs: null,
-              timeDifferenceFormatted: null,
-            },
-          };
-        }
-        if (hasTokenAd && firstTokenAdOrder) {
-          tokenAdInfo = {
-            adCount: tokenAdOrders.length,
-            isApprovedBeforeMigration: null,
-            timeDifferenceMs: null,
-            timeDifferenceFormatted: null,
-          };
-        }
-        if (hasCommunityTakeover && firstCommunityTakeoverOrder) {
-          communityTakeoverInfo = {
-            takeoverCount: communityTakeoverOrders.length,
-            isApprovedBeforeMigration: null,
-            timeDifferenceMs: null,
-            timeDifferenceFormatted: null,
-          };
-        }
+        creationToMigrationTime = {
+          timeDifferenceMs: null,
+          timeDifferenceFormatted: null,
+        };
       }
+
+      const graduatedAtTimestamp = gradInfo.graduatedAtTimestamp;
+
+      if (tokenProfileOrder?.paymentTimestamp && graduatedAtTimestamp) {
+        const timeDifferenceMs =
+          tokenProfileOrder.paymentTimestamp - graduatedAtTimestamp;
+        graduationInfo = {
+          graduatedAt: gradInfo.graduatedAt,
+          graduatedAtTimestamp,
+          createdAt: gradInfo.createdAt,
+          createdAtTimestamp: gradInfo.createdAtTimestamp,
+          twitter: gradInfo.twitter,
+          telegram: gradInfo.telegram,
+          website: gradInfo.website,
+          organicScore: gradInfo.organicScore,
+          organicScoreLabel: gradInfo.organicScoreLabel,
+          isApprovedBeforeMigration: timeDifferenceMs < 0,
+          timeDifferenceMs,
+          timeDifferenceFormatted: formatTimeDifference(timeDifferenceMs),
+          creationToMigrationTime,
+        };
+      } else {
+        graduationInfo = {
+          graduatedAt: gradInfo.graduatedAt,
+          graduatedAtTimestamp,
+          createdAt: gradInfo.createdAt,
+          createdAtTimestamp: gradInfo.createdAtTimestamp,
+          twitter: gradInfo.twitter,
+          telegram: gradInfo.telegram,
+          website: gradInfo.website,
+          organicScore: gradInfo.organicScore,
+          organicScoreLabel: gradInfo.organicScoreLabel,
+          isApprovedBeforeMigration: null,
+          timeDifferenceMs: null,
+          timeDifferenceFormatted: null,
+          creationToMigrationTime,
+        };
+      }
+
+      if (boostInfo.hasBoosts && boostInfo.firstBoost && graduatedAtTimestamp) {
+        const firstBoostTimeDiff =
+          boostInfo.firstBoost.paymentTimestamp - graduatedAtTimestamp;
+        boostInfo.firstBoostVsMigration = {
+          isFirstBoostBeforeMigration: firstBoostTimeDiff < 0,
+          timeDifferenceMs: firstBoostTimeDiff,
+          timeDifferenceFormatted: formatTimeDifference(firstBoostTimeDiff),
+        };
+      }
+
+      if (firstTokenAdOrder?.paymentTimestamp && graduatedAtTimestamp) {
+        const tokenAdTimeDifferenceMs =
+          firstTokenAdOrder.paymentTimestamp - graduatedAtTimestamp;
+        tokenAdInfo = {
+          adCount: tokenAdOrders.length,
+          isApprovedBeforeMigration: tokenAdTimeDifferenceMs < 0,
+          timeDifferenceMs: tokenAdTimeDifferenceMs,
+          timeDifferenceFormatted: formatTimeDifference(tokenAdTimeDifferenceMs),
+        };
+      } else if (hasTokenAd && firstTokenAdOrder) {
+        tokenAdInfo = {
+          adCount: tokenAdOrders.length,
+          isApprovedBeforeMigration: null,
+          timeDifferenceMs: null,
+          timeDifferenceFormatted: null,
+        };
+      }
+
+      if (firstCommunityTakeoverOrder?.paymentTimestamp && graduatedAtTimestamp) {
+        const communityTakeoverTimeDifferenceMs =
+          firstCommunityTakeoverOrder.paymentTimestamp - graduatedAtTimestamp;
+        communityTakeoverInfo = {
+          takeoverCount: communityTakeoverOrders.length,
+          isApprovedBeforeMigration: communityTakeoverTimeDifferenceMs < 0,
+          timeDifferenceMs: communityTakeoverTimeDifferenceMs,
+          timeDifferenceFormatted: formatTimeDifference(communityTakeoverTimeDifferenceMs),
+        };
+      } else if (hasCommunityTakeover && firstCommunityTakeoverOrder) {
+        communityTakeoverInfo = {
+          takeoverCount: communityTakeoverOrders.length,
+          isApprovedBeforeMigration: null,
+          timeDifferenceMs: null,
+          timeDifferenceFormatted: null,
+        };
+      }
+    } else if (tokenProfileOrder) {
+      graduationInfo = {
+        graduatedAt: null,
+        graduatedAtTimestamp: null,
+        createdAt: null,
+        createdAtTimestamp: null,
+        twitter: null,
+        telegram: null,
+        website: null,
+        organicScore: null,
+        organicScoreLabel: null,
+        isApprovedBeforeMigration: null,
+        timeDifferenceMs: null,
+        timeDifferenceFormatted: null,
+        creationToMigrationTime: {
+          timeDifferenceMs: null,
+          timeDifferenceFormatted: null,
+        },
+      };
     }
 
     return {
@@ -499,14 +481,15 @@ async function checkMultipleTokens(
   const rateLimiter = new RateLimiter();
   const batchSize = 10; // Process 10 tokens in parallel per batch
 
-  // Load existing results
-  const approvedMap = await loadExistingApprovedTokens();
-  const unapprovedMap = await loadExistingUnapprovedTokens();
+  const tokensMap = await loadExistingTokens();
 
-  // Filter out already processed tokens
   const tokensToCheck = tokenAddresses.filter((addr) => {
     const trimmed = addr.trim();
-    return trimmed && !approvedMap.has(trimmed) && !unapprovedMap.has(trimmed);
+    if (!trimmed) return false;
+    const existing = tokensMap.get(trimmed);
+    if (!existing) return true;
+    // Re-fetch tokens saved in the old unapproved format (launch-only, no migration)
+    return !("migration" in existing);
   });
 
   const totalToCheck = tokensToCheck.length;
@@ -565,13 +548,8 @@ async function checkMultipleTokens(
     
     results.push(...batchResults);
 
-    // Save results incrementally
     for (const result of batchResults) {
-      if (result.hasTokenProfile) {
-        await saveApprovedTokenIncremental(result, approvedMap);
-      } else {
-        await saveUnapprovedTokenIncremental(result, unapprovedMap);
-      }
+      await saveTokenIncremental(result, tokensMap);
     }
 
     // Display batch results
@@ -617,280 +595,137 @@ async function loadTokenAddressesFromFile(
   }
 }
 
-/**
- * Load existing approved tokens from JSON file
- */
-async function loadExistingApprovedTokens(
-  filename: string = APPROVED_TOKENS_JSON
-): Promise<Map<string, any>> {
-  try {
-    const content = await readFile(filename, "utf-8");
-    const data = JSON.parse(content);
-    const tokenMap = new Map<string, any>();
-    
-    if (data.tokens && Array.isArray(data.tokens)) {
+async function loadExistingTokens(): Promise<Map<string, any>> {
+  const tokenMap = new Map<string, any>();
+  const legacyFiles = [
+    ALL_TOKENS_JSON,
+    join(DATA_DIR, "approved_tokens.json"),
+    UNAPPROVED_TOKENS_JSON,
+  ];
+
+  for (const filename of legacyFiles) {
+    try {
+      const content = await readFile(filename, "utf-8");
+      const data = JSON.parse(content);
+      if (!Array.isArray(data.tokens)) continue;
+
       for (const token of data.tokens) {
-        tokenMap.set(token.tokenAddress, token);
+        if (!token.tokenAddress) continue;
+        if (!tokenMap.has(token.tokenAddress)) {
+          tokenMap.set(token.tokenAddress, token);
+        }
       }
+    } catch {
+      // File missing or invalid
     }
-    
-    return tokenMap;
-  } catch (error) {
-    // File doesn't exist or is invalid - return empty map
-    return new Map();
   }
+
+  return tokenMap;
 }
 
-/**
- * Load existing unapproved tokens from JSON file
- */
-async function loadExistingUnapprovedTokens(
-  filename: string = UNAPPROVED_TOKENS_JSON
-): Promise<Map<string, any>> {
-  try {
-    const content = await readFile(filename, "utf-8");
-    const data = JSON.parse(content);
-    const tokenMap = new Map<string, any>();
-    
-    if (data.tokens && Array.isArray(data.tokens)) {
-      for (const token of data.tokens) {
-        tokenMap.set(token.tokenAddress, token);
-      }
-    }
-    
-    return tokenMap;
-  } catch (error) {
-    // File doesn't exist or is invalid - return empty map
-    return new Map();
-  }
-}
+function buildTokenDataFromResult(result: TokenCheckResult): Record<string, unknown> {
+  const isHighlighted =
+    result.hasTokenProfile &&
+    result.boostInfo?.hasBoosts === true &&
+    result.graduationInfo?.isApprovedBeforeMigration === true &&
+    result.boostInfo?.firstBoostVsMigration?.isFirstBoostBeforeMigration === true;
 
-/**
- * Save approved token incrementally (append to existing)
- */
-async function saveApprovedTokenIncremental(
-  result: TokenCheckResult,
-  approvedMap: Map<string, any>,
-  filename: string = APPROVED_TOKENS_JSON
-): Promise<void> {
-  if (!result.hasTokenProfile || !result.order) {
-    return;
-  }
-
-  // Check if this is a highlighted token (boost + tokenProfile BOTH approved before migration)
-  const isHighlighted = result.boostInfo?.hasBoosts && 
-                        result.graduationInfo?.isApprovedBeforeMigration === true &&
-                        result.boostInfo?.firstBoostVsMigration?.isFirstBoostBeforeMigration === true;
-
-  const tokenData: any = {
+  return {
     tokenAddress: result.tokenAddress,
     gmgnUrl: `https://gmgn.ai/sol/token/${result.tokenAddress}`,
+    hasTokenProfile: result.hasTokenProfile,
     highlighted: isHighlighted,
-    migration: result.graduationInfo ? {
-      createdAt: result.graduationInfo.createdAt,
-      graduatedAt: result.graduationInfo.graduatedAt,
-      twitter: result.graduationInfo.twitter,
-      website: result.graduationInfo.website,
-      telegram: result.graduationInfo.telegram,
-      organicScore: result.graduationInfo.organicScore,
-      organicScoreLabel: result.graduationInfo.organicScoreLabel,
-      isApprovedBeforeMigration: result.graduationInfo.isApprovedBeforeMigration,
-      approvedVsMigrationMs: result.graduationInfo.timeDifferenceMs,
-      approvedVsMigration: result.graduationInfo.timeDifferenceFormatted,
-      creationToMigrationMs: result.graduationInfo.creationToMigrationTime?.timeDifferenceMs ?? null,
-      creationToMigration: result.graduationInfo.creationToMigrationTime?.timeDifferenceFormatted ?? null,
-      websiteDetails: result.graduationInfo.websiteDetails ?? null,
-    } : null,
-    tokenAd: result.hasTokenAd ? {
-      hasTokenAd: true,
-      adCount: result.tokenAdInfo?.adCount ?? 0,
-      paymentTimestamp: result.tokenAdOrder?.paymentTimestamp ?? null,
-      paymentDate: result.tokenAdOrder?.paymentTimestamp 
-        ? new Date(result.tokenAdOrder.paymentTimestamp).toISOString() 
+    error: result.error ?? null,
+    migration: result.graduationInfo
+      ? {
+          createdAt: result.graduationInfo.createdAt,
+          graduatedAt: result.graduationInfo.graduatedAt,
+          twitter: result.graduationInfo.twitter,
+          website: result.graduationInfo.website,
+          telegram: result.graduationInfo.telegram,
+          organicScore: result.graduationInfo.organicScore,
+          organicScoreLabel: result.graduationInfo.organicScoreLabel,
+          isApprovedBeforeMigration: result.graduationInfo.isApprovedBeforeMigration,
+          approvedVsMigrationMs: result.graduationInfo.timeDifferenceMs,
+          approvedVsMigration: result.graduationInfo.timeDifferenceFormatted,
+          creationToMigrationMs:
+            result.graduationInfo.creationToMigrationTime?.timeDifferenceMs ?? null,
+          creationToMigration:
+            result.graduationInfo.creationToMigrationTime?.timeDifferenceFormatted ?? null,
+          websiteDetails: result.graduationInfo.websiteDetails ?? null,
+        }
+      : null,
+    tokenAd: result.hasTokenAd
+      ? {
+          hasTokenAd: true,
+          adCount: result.tokenAdInfo?.adCount ?? 0,
+          paymentTimestamp: result.tokenAdOrder?.paymentTimestamp ?? null,
+          paymentDate: result.tokenAdOrder?.paymentTimestamp
+            ? new Date(result.tokenAdOrder.paymentTimestamp).toISOString()
+            : null,
+          isApprovedBeforeMigration: result.tokenAdInfo?.isApprovedBeforeMigration ?? null,
+          approvedVsMigrationMs: result.tokenAdInfo?.timeDifferenceMs ?? null,
+          approvedVsMigration: result.tokenAdInfo?.timeDifferenceFormatted ?? null,
+        }
+      : null,
+    communityTakeover: result.hasCommunityTakeover
+      ? {
+          hasCommunityTakeover: true,
+          takeoverCount: result.communityTakeoverInfo?.takeoverCount ?? 0,
+          paymentTimestamp: result.communityTakeoverOrder?.paymentTimestamp ?? null,
+          paymentDate: result.communityTakeoverOrder?.paymentTimestamp
+            ? new Date(result.communityTakeoverOrder.paymentTimestamp).toISOString()
+            : null,
+          isApprovedBeforeMigration:
+            result.communityTakeoverInfo?.isApprovedBeforeMigration ?? null,
+          approvedVsMigrationMs: result.communityTakeoverInfo?.timeDifferenceMs ?? null,
+          approvedVsMigration: result.communityTakeoverInfo?.timeDifferenceFormatted ?? null,
+        }
+      : null,
+    boost:
+      result.boostInfo && result.boostInfo.hasBoosts
+        ? {
+            hasBoosts: true,
+            count: result.boostInfo.boostCount,
+            totalAmount: result.boostInfo.totalAmount,
+            firstBoost: result.boostInfo.firstBoost
+              ? {
+                  amount: result.boostInfo.firstBoost.amount,
+                  date: new Date(result.boostInfo.firstBoost.paymentTimestamp).toISOString(),
+                }
+              : null,
+            firstBoostVsMigration: result.boostInfo.firstBoostVsMigration
+              ? {
+                  isBeforeMigration:
+                    result.boostInfo.firstBoostVsMigration.isFirstBoostBeforeMigration,
+                  timeMs: result.boostInfo.firstBoostVsMigration.timeDifferenceMs,
+                  time: result.boostInfo.firstBoostVsMigration.timeDifferenceFormatted,
+                }
+              : null,
+          }
         : null,
-      isApprovedBeforeMigration: result.tokenAdInfo?.isApprovedBeforeMigration ?? null,
-      approvedVsMigrationMs: result.tokenAdInfo?.timeDifferenceMs ?? null,
-      approvedVsMigration: result.tokenAdInfo?.timeDifferenceFormatted ?? null,
-    } : null,
-    communityTakeover: result.hasCommunityTakeover ? {
-      hasCommunityTakeover: true,
-      takeoverCount: result.communityTakeoverInfo?.takeoverCount ?? 0,
-      paymentTimestamp: result.communityTakeoverOrder?.paymentTimestamp ?? null,
-      paymentDate: result.communityTakeoverOrder?.paymentTimestamp 
-        ? new Date(result.communityTakeoverOrder.paymentTimestamp).toISOString() 
-        : null,
-      isApprovedBeforeMigration: result.communityTakeoverInfo?.isApprovedBeforeMigration ?? null,
-      approvedVsMigrationMs: result.communityTakeoverInfo?.timeDifferenceMs ?? null,
-      approvedVsMigration: result.communityTakeoverInfo?.timeDifferenceFormatted ?? null,
-    } : null,
-    boost: result.boostInfo && result.boostInfo.hasBoosts ? {
-      hasBoosts: true,
-      count: result.boostInfo.boostCount,
-      totalAmount: result.boostInfo.totalAmount,
-      firstBoost: result.boostInfo.firstBoost ? {
-        amount: result.boostInfo.firstBoost.amount,
-        date: new Date(result.boostInfo.firstBoost.paymentTimestamp).toISOString(),
-      } : null,
-      firstBoostVsMigration: result.boostInfo.firstBoostVsMigration ? {
-        isBeforeMigration: result.boostInfo.firstBoostVsMigration.isFirstBoostBeforeMigration,
-        timeMs: result.boostInfo.firstBoostVsMigration.timeDifferenceMs,
-        time: result.boostInfo.firstBoostVsMigration.timeDifferenceFormatted,
-      } : null,
-    } : null,
     launch: toLaunchJson(result.launchInfo),
   };
+}
 
-  approvedMap.set(result.tokenAddress, tokenData);
+async function saveTokenIncremental(
+  result: TokenCheckResult,
+  tokensMap: Map<string, any>,
+  filename: string = ALL_TOKENS_JSON
+): Promise<void> {
+  const tokenData = buildTokenDataFromResult(result);
+  tokensMap.set(result.tokenAddress, tokenData);
 
-  // Keep tokens in processing order (Map maintains insertion order)
-  const tokens = Array.from(approvedMap.values());
-
+  const tokens = Array.from(tokensMap.values());
   const output = {
-    totalApproved: approvedMap.size,
+    totalTokens: tokensMap.size,
+    withTokenProfile: tokens.filter((t: any) => t.hasTokenProfile).length,
     highlightedCount: tokens.filter((t: any) => t.highlighted).length,
     checkedAt: new Date().toISOString(),
-    tokens: tokens,
+    tokens,
   };
 
   await writeFile(filename, JSON.stringify(output, null, 2), "utf-8");
-}
-
-/**
- * Save unapproved token incrementally (append to existing)
- */
-async function saveUnapprovedTokenIncremental(
-  result: TokenCheckResult,
-  unapprovedMap: Map<string, any>,
-  filename: string = UNAPPROVED_TOKENS_JSON
-): Promise<void> {
-  if (result.hasTokenProfile) {
-    return;
-  }
-
-  const tokenData = {
-    tokenAddress: result.tokenAddress,
-    gmgnUrl: `https://gmgn.ai/sol/token/${result.tokenAddress}`,
-    error: result.error || null,
-    launch: toLaunchJson(result.launchInfo),
-  };
-
-  unapprovedMap.set(result.tokenAddress, tokenData);
-
-  const output = {
-    totalUnapproved: unapprovedMap.size,
-    checkedAt: new Date().toISOString(),
-    tokens: Array.from(unapprovedMap.values()),
-  };
-
-  await writeFile(filename, JSON.stringify(output, null, 2), "utf-8");
-}
-
-/**
- * Save approved tokenProfile addresses to JSON file
- */
-async function saveApprovedTokens(
-  results: TokenCheckResult[],
-  filename: string = APPROVED_TOKENS_JSON
-): Promise<void> {
-  const approvedTokens = results
-    .filter((r) => r.hasTokenProfile && r.order)
-    .map((r) => {
-      const isHighlighted = r.boostInfo?.hasBoosts && 
-                            r.graduationInfo?.isApprovedBeforeMigration === true &&
-                            r.boostInfo?.firstBoostVsMigration?.isFirstBoostBeforeMigration === true;
-      
-      return {
-        tokenAddress: r.tokenAddress,
-        gmgnUrl: `https://gmgn.ai/sol/token/${r.tokenAddress}`,
-        highlighted: isHighlighted,
-        migration: r.graduationInfo ? {
-          createdAt: r.graduationInfo.createdAt,
-          graduatedAt: r.graduationInfo.graduatedAt,
-          twitter: r.graduationInfo.twitter,
-          telegram: r.graduationInfo.telegram,
-          website: r.graduationInfo.website,
-          organicScore: r.graduationInfo.organicScore,
-          organicScoreLabel: r.graduationInfo.organicScoreLabel,
-          isApprovedBeforeMigration: r.graduationInfo.isApprovedBeforeMigration,
-          approvedVsMigrationMs: r.graduationInfo.timeDifferenceMs,
-          approvedVsMigration: r.graduationInfo.timeDifferenceFormatted,
-          creationToMigrationMs: r.graduationInfo.creationToMigrationTime?.timeDifferenceMs ?? null,
-          creationToMigration: r.graduationInfo.creationToMigrationTime?.timeDifferenceFormatted ?? null,
-          websiteDetails: r.graduationInfo.websiteDetails ?? null,
-        } : null,
-        tokenAd: r.hasTokenAd ? {
-          hasTokenAd: true,
-          paymentTimestamp: r.tokenAdOrder?.paymentTimestamp ?? null,
-          paymentDate: r.tokenAdOrder?.paymentTimestamp 
-            ? new Date(r.tokenAdOrder.paymentTimestamp).toISOString() 
-            : null,
-          isApprovedBeforeMigration: r.tokenAdInfo?.isApprovedBeforeMigration ?? null,
-          approvedVsMigrationMs: r.tokenAdInfo?.timeDifferenceMs ?? null,
-          approvedVsMigration: r.tokenAdInfo?.timeDifferenceFormatted ?? null,
-        } : null,
-        communityTakeover: r.hasCommunityTakeover ? {
-          hasCommunityTakeover: true,
-          takeoverCount: r.communityTakeoverInfo?.takeoverCount ?? 0,
-          paymentTimestamp: r.communityTakeoverOrder?.paymentTimestamp ?? null,
-          paymentDate: r.communityTakeoverOrder?.paymentTimestamp 
-            ? new Date(r.communityTakeoverOrder.paymentTimestamp).toISOString() 
-            : null,
-          isApprovedBeforeMigration: r.communityTakeoverInfo?.isApprovedBeforeMigration ?? null,
-          approvedVsMigrationMs: r.communityTakeoverInfo?.timeDifferenceMs ?? null,
-          approvedVsMigration: r.communityTakeoverInfo?.timeDifferenceFormatted ?? null,
-        } : null,
-        boost: r.boostInfo && r.boostInfo.hasBoosts ? {
-          hasBoosts: true,
-          count: r.boostInfo.boostCount,
-          totalAmount: r.boostInfo.totalAmount,
-          firstBoost: r.boostInfo.firstBoost ? {
-            amount: r.boostInfo.firstBoost.amount,
-            date: new Date(r.boostInfo.firstBoost.paymentTimestamp).toISOString(),
-          } : null,
-          firstBoostVsMigration: r.boostInfo.firstBoostVsMigration ? {
-            isBeforeMigration: r.boostInfo.firstBoostVsMigration.isFirstBoostBeforeMigration,
-            timeMs: r.boostInfo.firstBoostVsMigration.timeDifferenceMs,
-            time: r.boostInfo.firstBoostVsMigration.timeDifferenceFormatted,
-          } : null,
-        } : null,
-        launch: toLaunchJson(r.launchInfo),
-      };
-    });
-
-  const output = {
-    totalApproved: approvedTokens.length,
-    checkedAt: new Date().toISOString(),
-    tokens: approvedTokens,
-  };
-
-  await writeFile(filename, JSON.stringify(output, null, 2), "utf-8");
-  console.log(`\n✓ Saved ${approvedTokens.length} approved token(s) to ${filename}`);
-}
-
-/**
- * Save unapproved token addresses to JSON file
- */
-async function saveUnapprovedTokens(
-  results: TokenCheckResult[],
-  filename: string = UNAPPROVED_TOKENS_JSON
-): Promise<void> {
-  const unapprovedTokens = results
-    .filter((r) => !r.hasTokenProfile)
-    .map((r) => ({
-      tokenAddress: r.tokenAddress,
-      gmgnUrl: `https://gmgn.ai/sol/token/${r.tokenAddress}`,
-      error: r.error || null,
-      launch: toLaunchJson(r.launchInfo),
-    }));
-
-  const output = {
-    totalUnapproved: unapprovedTokens.length,
-    checkedAt: new Date().toISOString(),
-    tokens: unapprovedTokens,
-  };
-
-  await writeFile(filename, JSON.stringify(output, null, 2), "utf-8");
-  console.log(`✓ Saved ${unapprovedTokens.length} unapproved token(s) to ${filename}`);
 }
 
 /**
@@ -932,42 +767,24 @@ async function main() {
     console.log(`Errors: ${withErrors.length}`);
   }
 
-  // Note: Results are already saved incrementally during processing
-  // These final saves are just for summary/consistency
   console.log("\n=== Final Summary ===");
-  
-  if (withTokenProfile.length > 0) {
-    // Count highlighted tokens (boost + tokenProfile BOTH approved before migration)
-    const highlightedTokens = results.filter(
-      (r) => r.hasTokenProfile && 
-             r.boostInfo?.hasBoosts && 
-             r.graduationInfo?.isApprovedBeforeMigration === true &&
-             r.boostInfo?.firstBoostVsMigration?.isFirstBoostBeforeMigration === true
-    );
-    
-    // Count tokens with boosts
-    const tokensWithBoosts = results.filter(
-      (r) => r.hasTokenProfile && r.boostInfo?.hasBoosts
-    );
-    
-    console.log(`\n✓ ${withTokenProfile.length} approved token(s) saved to ${APPROVED_TOKENS_JSON}`);
-    if (tokensWithBoosts.length > 0) {
-      console.log(`  🚀 ${tokensWithBoosts.length} token(s) with dex boost(s)`);
-    }
-    if (highlightedTokens.length > 0) {
-      console.log(`  ⭐ ${highlightedTokens.length} HIGHLIGHTED token(s): Both boost AND tokenProfile approved BEFORE migration`);
-    }
-  } else {
-    console.log("\nNo tokens with approved tokenProfile found.");
-  }
-  
-  // Always try to export CSV if JSON file exists (even if no new tokens in this run)
-  console.log("\n=== Exporting to CSV ===");
-  await exportAllTokenCsvFiles();
+  console.log(`✓ All tokens saved to ${ALL_TOKENS_JSON}`);
 
-  if (withoutTokenProfile.length > 0) {
-    console.log(`✓ ${withoutTokenProfile.length} unapproved token(s) saved to ${UNAPPROVED_TOKENS_JSON}`);
+  const highlightedTokens = results.filter(
+    (r) =>
+      r.hasTokenProfile &&
+      r.boostInfo?.hasBoosts &&
+      r.graduationInfo?.isApprovedBeforeMigration === true &&
+      r.boostInfo?.firstBoostVsMigration?.isFirstBoostBeforeMigration === true
+  );
+  if (highlightedTokens.length > 0) {
+    console.log(
+      `  ⭐ ${highlightedTokens.length} HIGHLIGHTED: boost + tokenProfile before migration`
+    );
   }
+
+  console.log("\n=== Exporting to CSV ===");
+  await exportAllTokensToCSV();
 }
 
 // Run the main function
