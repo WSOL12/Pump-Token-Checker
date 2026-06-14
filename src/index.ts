@@ -1,10 +1,8 @@
-import { writeFile, readFile } from "fs/promises";
+import { readFile, writeFile } from "fs/promises";
+import { fileURLToPath } from "node:url";
 import "dotenv/config";
-import { join } from "path";
 import {
   ALL_TOKENS_JSON,
-  DATA_DIR,
-  UNAPPROVED_TOKENS_JSON,
   ensureDataDir,
 } from "./paths.js";
 import {
@@ -209,7 +207,7 @@ function formatTimeDifference(ms: number): string {
 /**
  * Check if a token has a tokenProfile order and compare with migration time
  */
-async function checkTokenProfile(
+export async function checkTokenProfile(
   tokenAddress: string,
   chainId: string = "solana"
 ): Promise<TokenCheckResult> {
@@ -485,11 +483,7 @@ async function checkMultipleTokens(
 
   const tokensToCheck = tokenAddresses.filter((addr) => {
     const trimmed = addr.trim();
-    if (!trimmed) return false;
-    const existing = tokensMap.get(trimmed);
-    if (!existing) return true;
-    // Re-fetch tokens saved in the old unapproved format (launch-only, no migration)
-    return !("migration" in existing);
+    return trimmed && !tokensMap.has(trimmed);
   });
 
   const totalToCheck = tokensToCheck.length;
@@ -597,33 +591,25 @@ async function loadTokenAddressesFromFile(
 
 async function loadExistingTokens(): Promise<Map<string, any>> {
   const tokenMap = new Map<string, any>();
-  const legacyFiles = [
-    ALL_TOKENS_JSON,
-    join(DATA_DIR, "approved_tokens.json"),
-    UNAPPROVED_TOKENS_JSON,
-  ];
 
-  for (const filename of legacyFiles) {
-    try {
-      const content = await readFile(filename, "utf-8");
-      const data = JSON.parse(content);
-      if (!Array.isArray(data.tokens)) continue;
+  try {
+    const content = await readFile(ALL_TOKENS_JSON, "utf-8");
+    const data = JSON.parse(content);
+    if (!Array.isArray(data.tokens)) return tokenMap;
 
-      for (const token of data.tokens) {
-        if (!token.tokenAddress) continue;
-        if (!tokenMap.has(token.tokenAddress)) {
-          tokenMap.set(token.tokenAddress, token);
-        }
+    for (const token of data.tokens) {
+      if (token.tokenAddress) {
+        tokenMap.set(token.tokenAddress, token);
       }
-    } catch {
-      // File missing or invalid
     }
+  } catch {
+    // File missing or invalid — start fresh
   }
 
   return tokenMap;
 }
 
-function buildTokenDataFromResult(result: TokenCheckResult): Record<string, unknown> {
+export function buildTokenDataFromResult(result: TokenCheckResult): Record<string, unknown> {
   const isHighlighted =
     result.hasTokenProfile &&
     result.boostInfo?.hasBoosts === true &&
@@ -788,4 +774,6 @@ async function main() {
 }
 
 // Run the main function
-main().catch(console.error);
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  main().catch(console.error);
+}

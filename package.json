@@ -10,7 +10,7 @@
     "dev": "tsx src/index.ts",
     "fetch-tokens": "tsx src/fetch-tokens.ts",
     "filter-pools": "tsx src/filter-multiple-pools.ts",
-    "backfill-launch": "tsx src/backfill-launch.ts"
+    "csv-to-json": "tsx src/csv-to-json.ts"
   },
   "keywords": [
     "solana",
