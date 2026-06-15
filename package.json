@@ -9,8 +9,7 @@
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "fetch-tokens": "tsx src/fetch-tokens.ts",
-    "filter-pools": "tsx src/filter-multiple-pools.ts",
-    "csv-to-json": "tsx src/csv-to-json.ts"
+    "filter-pools": "tsx src/filter-multiple-pools.ts"
   },
   "keywords": [
     "solana",
