@@ -178,7 +178,7 @@ async function writeCsv(
 ): Promise<number> {
   const lines = [headers.map((h) => escapeCSV(h)).join(",")];
   for (const row of rows) {
-    lines.push(row.join(","));
+    lines.push(row.map((cell) => escapeCSV(cell)).join(","));
   }
   await writeFile(csvFilename, lines.join("\n"), "utf-8");
   return rows.length;
